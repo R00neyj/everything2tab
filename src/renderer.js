@@ -1,8 +1,12 @@
 const bar = document.getElementById('bar');
 const addBtn = document.getElementById('add');
 const empty = document.getElementById('empty');
+const pickBtn = document.getElementById('pick');
+const restoreBtn = document.getElementById('restore');
 const picker = document.getElementById('picker');
 const list = picker.querySelector('ul');
+const settingsBtn = document.getElementById('settings-btn');
+const settingsPanel = document.getElementById('settings');
 
 const reportBar = () => ws.barHeight(bar.getBoundingClientRect().bottom * devicePixelRatio);
 new ResizeObserver(reportBar).observe(bar);
@@ -23,6 +27,7 @@ function icon(src) {
 
 let latest = { tabs: [], saved: 0 };
 let drag = null; // { hwnd, el, x0, moved, out, to }
+let busy = null; // 지금 여는 묶음: 'restore' | 작업 공간 id | null. 한 번에 하나만 열 수 있음
 
 function render() {
   const { tabs, saved } = latest;
@@ -30,8 +35,8 @@ function render() {
   tabs.forEach((t, i) => {
     const tab = el('div', t.active ? 'tab active' : 'tab');
     tab.title = t.title;
-    const x = el('button', 'x', '✕');
-    x.title = '탭에서 분리';
+    const x = el('button', 'x', '\uE8BB');
+    x.title = '탭에서 빼기 (창은 닫히지 않음)';
     tab.append(icon(t.icon), el('span', 'title', t.title), x);
     tab.addEventListener('pointerdown', (e) => {
       if (e.button === 1) return ws.detach(t.hwnd);
@@ -43,28 +48,151 @@ function render() {
     x.addEventListener('click', () => ws.detach(t.hwnd));
     bar.insertBefore(tab, addBtn);
   });
-  empty.replaceChildren();
-  empty.style.display = tabs.length ? 'none' : '';
-  if (!tabs.length) {
-    empty.append(el('div', '', '+ 를 눌러 열려 있는 프로그램 창을 넣거나, 창을 이 탭 바로 끌어다 놓으세요'),
-      el('div', '', '탭 가운데 클릭·✕ = 분리, 탭을 바 밖으로 끌면 분리'),
-      el('div', '', '단축키: Ctrl+Alt+PageUp/PageDown = 이전/다음 탭, Ctrl+Alt+1~9 = n번째 탭'));
-    if (saved) {
-      const btn = el('button', 'restore', `이전 작업 공간 복원 (${saved}개)`);
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        btn.textContent = '복원 중… (꺼져 있는 프로그램은 실행해서 기다림)';
-        const failed = await ws.restore();
-        if (failed.length) alert(`복원하지 못한 프로그램: ${failed.join(', ')}`);
-      });
-      empty.append(btn);
-    }
-  }
+  empty.hidden = tabs.length > 0 || overlay !== null;
+  restoreBtn.hidden = !saved;
+  restoreBtn.disabled = busy !== null;
+  restoreBtn.textContent = busy === 'restore' ? '복원 중… 꺼져 있는 프로그램은 실행해서 기다림' : `이전 작업 공간 복원 (${saved}개)`;
 }
+
+function report(failed) {
+  if (failed === null) alert('다른 작업 공간을 여는 중입니다. 끝난 뒤 다시 시도하세요.');
+  else if (failed.length) alert(`탭으로 넣지 못한 프로그램: ${failed.join(', ')}`);
+}
+
+async function runBusy(key, job) {
+  if (busy) return;
+  busy = key;
+  renderWorkspaces();
+  render();
+  const failed = await job();
+  busy = null;
+  renderWorkspaces();
+  render();
+  report(failed);
+}
+
+restoreBtn.addEventListener('click', () => runBusy('restore', ws.restore));
 
 ws.onTabs((state) => {
   latest = state;
   if (!drag) render(); // 끄는 중에 다시 그리면 포인터 캡처가 끊김
+  if (overlay === 'settings') renderWorkspaceSettings(); // "열린 탭 추가" 버튼 상태
+});
+
+// ---- 작업 공간: 함께 실행할 프로그램 묶음 ----
+
+const emptyLaunch = document.getElementById('empty-launch');
+const pickerLaunch = document.getElementById('picker-launch');
+const pickerSub = document.getElementById('picker-sub');
+const wsList = document.getElementById('ws-list');
+let workspaces = [];
+let focusWorkspace = null; // 새로 만든 작업 공간: 다음에 그릴 때 이름 칸에 포커스
+
+const baseName = (p) => p.split('\\').pop().replace(/\.(exe|lnk)$/i, '');
+const itemLabel = (it) => it.title || baseName(it.launch || it.exe);
+const tabItems = () => latest.tabs.filter((t) => t.exe).map((t) => ({ exe: t.exe, title: t.title }));
+const sameItem = (a, b) => a.exe.toLowerCase() === b.exe.toLowerCase() && a.title === b.title && (a.launch || '') === (b.launch || '');
+
+function addItems(w, items) {
+  const add = items.filter((it) => !w.items.some((x) => sameItem(x, it)));
+  if (add.length) ws.updateWorkspace(w.id, { items: [...w.items, ...add] });
+}
+
+function launch(id) {
+  closeOverlay();
+  runBusy(id, () => ws.launchWorkspace(id));
+}
+
+function launchButton(w) {
+  const b = el('button', 'launch-btn');
+  const stack = el('span', 'stack');
+  for (const it of w.items.slice(0, 4)) stack.append(icon(it.icon));
+  b.append(stack, el('span', 'name', busy === w.id ? `${w.name} 여는 중…` : w.name), el('span', 'count', `${w.items.length}개`));
+  b.title = w.items.map(itemLabel).join('\n');
+  b.disabled = busy !== null || !w.items.length;
+  b.addEventListener('click', () => launch(w.id));
+  return b;
+}
+
+function renderWorkspaceSettings() {
+  // 이름을 고치는 중에 다시 그리면 입력이 끊김
+  if (wsList.contains(document.activeElement) && document.activeElement.classList.contains('wsp-name')) return;
+  wsList.replaceChildren(...workspaces.map((w) => {
+    const name = el('input', 'wsp-name');
+    name.value = w.name;
+    name.setAttribute('aria-label', '작업 공간 이름');
+    name.addEventListener('change', () => ws.updateWorkspace(w.id, { name: name.value }));
+    name.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') name.blur();
+      if (e.key === 'Escape') { e.stopPropagation(); name.value = w.name; name.blur(); }
+    });
+    name.addEventListener('blur', () => setTimeout(renderWorkspaceSettings));
+
+    const open = el('button', 'btn primary small', busy === w.id ? '여는 중…' : '열기');
+    open.disabled = busy !== null || !w.items.length;
+    open.addEventListener('click', () => launch(w.id));
+    const del = el('button', 'icon-btn', '\uE74D');
+    del.title = '작업 공간 삭제';
+    del.addEventListener('click', () => {
+      if (confirm(`"${w.name}" 작업 공간을 삭제할까요? 실행 중인 프로그램은 닫히지 않습니다.`)) ws.deleteWorkspace(w.id);
+    });
+    const head = el('div', 'wsp-head');
+    head.append(name, open, del);
+
+    const chips = el('div', 'chips');
+    if (!w.items.length) chips.append(el('span', 'none', '프로그램이 없습니다. 아래 버튼으로 추가하세요.'));
+    w.items.forEach((it, i) => {
+      const chip = el('span', 'chip');
+      chip.title = it.launch || it.exe;
+      const x = el('button', 'icon-btn', '\uE8BB');
+      x.title = '이 작업 공간에서 빼기';
+      x.addEventListener('click', () => ws.updateWorkspace(w.id, { items: w.items.filter((_, j) => j !== i) }));
+      chip.append(icon(it.icon), el('span', '', itemLabel(it)), x);
+      chips.append(chip);
+    });
+
+    const fromTabs = el('button', 'btn small', '열린 탭 추가');
+    fromTabs.title = '지금 탭에 있는 프로그램을 이 작업 공간에 넣습니다';
+    fromTabs.disabled = !latest.tabs.length;
+    fromTabs.addEventListener('click', () => addItems(w, tabItems()));
+    const files = el('button', 'btn small', '프로그램 파일 추가…');
+    files.addEventListener('click', async () => {
+      const r = await ws.pickPrograms();
+      addItems(w, r.items);
+      if (r.skipped.length) alert(`바로 가기 대상이 프로그램(.exe)이 아니라서 넣지 못함: ${r.skipped.join(', ')}`);
+    });
+    const foot = el('div', 'wsp-foot');
+    foot.append(fromTabs, files);
+
+    const card = el('div', 'wsp');
+    card.append(head, chips, foot);
+    if (w.id === focusWorkspace) {
+      focusWorkspace = null;
+      queueMicrotask(() => { name.focus(); name.select(); });
+    }
+    return card;
+  }));
+}
+
+function renderWorkspaces() {
+  const has = workspaces.length > 0;
+  emptyLaunch.hidden = !has;
+  pickerLaunch.hidden = !has;
+  pickerSub.hidden = !has;
+  emptyLaunch.querySelector('.launch-list').replaceChildren(...workspaces.map(launchButton));
+  pickerLaunch.querySelector('.launch-list').replaceChildren(...workspaces.map(launchButton));
+  renderWorkspaceSettings();
+}
+
+ws.onWorkspaces((list) => {
+  workspaces = list;
+  renderWorkspaces();
+});
+
+document.getElementById('ws-new').addEventListener('click', async () => {
+  // 탭이 열려 있으면 그 프로그램들로 시작
+  focusWorkspace = await ws.createWorkspace('', tabItems());
+  renderWorkspaceSettings();
 });
 
 bar.addEventListener('pointermove', (e) => {
@@ -91,28 +219,70 @@ bar.addEventListener('pointerup', () => {
 });
 bar.addEventListener('pointercancel', () => { drag = null; render(); });
 
-ws.onDropHint((on) => bar.classList.toggle('drop', on));
+const stage = document.getElementById('stage');
+ws.onDropHint((zone) => {
+  bar.classList.toggle('drop', zone === 'bar');
+  stage.classList.toggle('drop', zone === 'window');
+});
+ws.onCloseOverlay(closeOverlay);
 
-function closePicker() {
-  picker.classList.remove('on');
-  addBtn.classList.remove('on');
-  ws.picker(false);
+// ---- 탭 줄 아래를 덮는 화면(창 선택 목록, 설정). 한 번에 하나만 ----
+
+const overlays = { picker: [picker, addBtn], settings: [settingsPanel, settingsBtn] };
+let overlay = null;
+
+function setOverlay(name) {
+  if (overlay) {
+    const [panel, btn] = overlays[overlay];
+    panel.hidden = true;
+    btn.classList.remove('on');
+  }
+  overlay = name;
+  if (name) {
+    const [panel, btn] = overlays[name];
+    panel.hidden = false;
+    btn.classList.add('on');
+  }
+  ws.overlay(name);
+  render();
 }
 
-addBtn.addEventListener('click', async () => {
-  if (picker.classList.contains('on')) return closePicker();
-  ws.picker(true);
-  picker.classList.add('on');
-  addBtn.classList.add('on');
-  list.replaceChildren(el('li', 'e', '불러오는 중…'));
+function closeOverlay() {
+  if (overlay) setOverlay(null);
+}
+
+async function openPicker() {
+  setOverlay('picker');
+  list.replaceChildren(el('li', 'note', '불러오는 중…'));
   const wins = await ws.listWindows();
+  if (overlay !== 'picker') return;
+  if (!wins.length) return list.replaceChildren(el('li', 'note', '넣을 수 있는 창이 없음'));
   list.replaceChildren(...wins.map((w) => {
+    const row = el('button', 'row');
+    row.append(icon(w.icon), el('span', 't', w.title), el('span', 'e', w.exe.split('\\').pop()));
+    row.addEventListener('click', () => { closeOverlay(); ws.add(w.hwnd); });
     const li = el('li');
-    li.append(icon(w.icon), el('span', 't', w.title), el('span', 'e', w.exe.split('\\').pop()));
-    li.addEventListener('click', () => { closePicker(); ws.add(w.hwnd); });
+    li.append(row);
     return li;
   }));
-  if (!wins.length) list.replaceChildren(el('li', 'e', '넣을 수 있는 창이 없음'));
+  list.querySelector('.row').focus();
+}
+
+async function openSettings() {
+  setOverlay('settings');
+  const s = await ws.getSettings();
+  for (const input of settingsPanel.querySelectorAll('input[name="theme"]')) input.checked = input.value === s.theme;
+  settingsPanel.querySelector('#auto-restore').checked = s.autoRestore;
+}
+
+settingsPanel.addEventListener('change', (e) => {
+  const t = e.target;
+  if (t.name === 'theme') ws.setSetting('theme', t.value);
+  else if (t.id === 'auto-restore') ws.setSetting('autoRestore', t.checked);
 });
 
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && picker.classList.contains('on')) closePicker(); });
+addBtn.addEventListener('click', () => (overlay === 'picker' ? closeOverlay() : openPicker()));
+settingsBtn.addEventListener('click', () => (overlay === 'settings' ? closeOverlay() : openSettings()));
+pickBtn.addEventListener('click', openPicker);
+
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeOverlay(); });

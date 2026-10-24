@@ -32,6 +32,7 @@ const api = {
   OpenProcess: kernel32.func('intptr_t __stdcall OpenProcess(uint32_t access, bool inherit, uint32_t pid)'),
   QueryFullProcessImageNameW: kernel32.func('bool __stdcall QueryFullProcessImageNameW(intptr_t h, uint32_t flags, _Out_ uint16_t *buf, _Inout_ uint32_t *size)'),
   DwmGetWindowAttribute: dwmapi.func('long __stdcall DwmGetWindowAttribute(intptr_t hwnd, uint32_t attr, void *value, uint32_t size)'),
+  DwmSetWindowAttribute: dwmapi.func('long __stdcall DwmSetWindowAttribute(intptr_t hwnd, uint32_t attr, void *value, uint32_t size)'),
   DwmGetRect: dwmapi.func('DwmGetWindowAttribute', 'long', ['intptr_t', 'uint32_t', koffi.out(koffi.pointer(RECT)), 'uint32_t']),
   CloseHandle: kernel32.func('bool __stdcall CloseHandle(intptr_t h)'),
 };
@@ -40,7 +41,8 @@ const SW_HIDE = 0, SW_SHOWNA = 8, SW_RESTORE = 9, SW_SHOW = 5;
 const GWL_EXSTYLE = -20, GWLP_HWNDPARENT = -8;
 const WS_EX_TOOLWINDOW = 0x80;
 const GW_OWNER = 4;
-const DWMWA_EXTENDED_FRAME_BOUNDS = 9, DWMWA_CLOAKED = 14;
+const DWMWA_EXTENDED_FRAME_BOUNDS = 9, DWMWA_CLOAKED = 14, DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWA_BORDER_COLOR = 34;
+const DWMWCP_DEFAULT = 0, DWMWCP_DONOTROUND = 1, DWMWA_COLOR_NONE = 0xFFFFFFFE, DWMWA_COLOR_DEFAULT = 0xFFFFFFFF;
 const SWP_NOZORDER = 0x4, SWP_NOACTIVATE = 0x10, SWP_ASYNCWINDOWPOS = 0x4000;
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 const VK_LBUTTON = 0x01;
@@ -138,8 +140,21 @@ function fitVisible(hwnd, t) {
     SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
 }
 
+function dwmSetU32(hwnd, attr, value) {
+  const v = Buffer.alloc(4);
+  v.writeUInt32LE(value);
+  return api.DwmSetWindowAttribute(hwnd, attr, v, 4);
+}
+
+// Windows 11이 창마다 그리는 1px 테두리와 둥근 모서리를 끄거나(embed=true) 되돌림
+// 탭 안에 넣은 창이 활성 탭과 이음매 없이 붙어 보이게 하려는 것. Windows 10에서는 실패해도 무시
+function setEmbedded(hwnd, embed) {
+  dwmSetU32(hwnd, DWMWA_BORDER_COLOR, embed ? DWMWA_COLOR_NONE : DWMWA_COLOR_DEFAULT);
+  dwmSetU32(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, embed ? DWMWCP_DONOTROUND : DWMWCP_DEFAULT);
+}
+
 module.exports = {
-  api, isAppWindow, listAppWindows, cursorPos, getTitle, getExePath, visibleRect, clientRectOnScreen, fitVisible,
+  api, isAppWindow, listAppWindows, cursorPos, getTitle, getExePath, visibleRect, clientRectOnScreen, fitVisible, setEmbedded,
   setOwner: (hwnd, owner) => api.SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, owner),
   show: (hwnd) => api.ShowWindowAsync(hwnd, SW_SHOWNA),
   showActivate: (hwnd) => api.ShowWindowAsync(hwnd, SW_SHOW),

@@ -5,42 +5,249 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'">
 <title>everything2tab</title>
 <style>
-  :root { --bg: #1e1f22; --bar: #2b2d31; --tab: #383a40; --fg: #e6e6e6; --muted: #9a9ca3; --accent: #5b8def; }
+  :root {
+    color-scheme: dark;
+    --bar-h: env(titlebar-area-height, 30px);
+    --accent: var(--sys-accent, #0078d4);
+    --surface: #282828;
+    --fg: #ffffff;
+    --muted: rgb(255 255 255 / .62);
+    --faint: rgb(255 255 255 / .4);
+    --hover: rgb(255 255 255 / .07);
+    --press: rgb(255 255 255 / .04);
+    --line: rgb(255 255 255 / .09);
+    --key: rgb(255 255 255 / .06);
+    --strip: rgb(0 0 0 / .34);
+    --tab-idle: rgb(255 255 255 / .5);
+    --icon: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --surface: #fbfbfb;
+      --fg: #1a1a1a;
+      --muted: rgb(0 0 0 / .62);
+      --faint: rgb(0 0 0 / .42);
+      --hover: rgb(0 0 0 / .05);
+      --press: rgb(0 0 0 / .03);
+      --line: rgb(0 0 0 / .1);
+      --key: rgb(0 0 0 / .04);
+      --strip: rgb(0 0 0 / .08);
+      --tab-idle: rgb(0 0 0 / .5);
+    }
+  }
   * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13px "Segoe UI", "Malgun Gothic", sans-serif; user-select: none; }
-  #bar { height: 40px; display: flex; align-items: flex-end; gap: 2px; padding: 0 8px; background: var(--bar); }
-  .tab { display: flex; align-items: center; gap: 8px; height: 34px; min-width: 60px; max-width: 220px; flex: 0 1 220px; padding: 0 8px 0 12px; border-radius: 8px 8px 0 0; color: var(--muted); cursor: default; }
-  .tab:hover { background: #33353b; }
-  .tab.active { background: var(--tab); color: var(--fg); box-shadow: inset 0 2px 0 var(--accent); }
-  .tab img { width: 16px; height: 16px; flex: none; }
-  .tab .title { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  .tab .x { flex: none; width: 20px; height: 20px; border: 0; border-radius: 4px; background: none; color: inherit; font-size: 14px; line-height: 1; visibility: hidden; }
-  .tab:hover .x, .tab.active .x { visibility: visible; }
-  .tab .x:hover { background: #4a4d55; }
-  #add { flex: none; width: 30px; height: 30px; margin: 0 0 2px 4px; border: 0; border-radius: 6px; background: none; color: var(--muted); font-size: 20px; }
-  #add:hover, #add.on { background: var(--tab); color: var(--fg); }
-  #empty, #picker { position: absolute; inset: 40px 0 0 0; padding: 24px; }
-  #picker { display: none; overflow: auto; background: var(--bg); }
-  #empty { display: grid; place-content: center; gap: 4px; color: var(--muted); text-align: center; line-height: 1.8; }
-  .restore { margin-top: 16px; padding: 8px 16px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; font: inherit; }
-  .restore:disabled { opacity: .6; }
-  .tab.dragging { position: relative; z-index: 1; background: var(--tab); }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  /* 탭 줄은 Mica 위에 어두운 막(--strip)만 깔아서, 작업 영역 색(--surface)인 활성 탭과 확실히 갈리게 함 */
+  body { background: var(--strip); color: var(--fg); font: 12px/1.4 "Segoe UI Variable Text", "Segoe UI", "Malgun Gothic", sans-serif; user-select: none; }
+  button { font: inherit; color: inherit; border: 0; background: none; padding: 0; }
+  button:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
+
+  /* ---- 탭 줄 = 제목 표시줄 ---- */
+  /* 너비는 OS 캡션 버튼 앞까지. .grow는 탭이 많아져도 남는 창 이동용 자리, 그 오른쪽 끝(최소화 버튼 왼쪽)에 설정 버튼 */
+  #bar {
+    position: fixed; top: 0; left: env(titlebar-area-x, 0); width: env(titlebar-area-width, 100%); height: var(--bar-h);
+    display: flex; align-items: flex-end; padding: 0 0 0 8px;
+    -webkit-app-region: drag;
+  }
+  /* 탭 요소 자체는 탭 줄 꼭대기부터 닿게 해서 위쪽 빈 4px도 클릭되게 함(Chrome과 같음). 보이는 탭 모양은 ::before가 그림 */
+  .tab {
+    position: relative; isolation: isolate; display: flex; align-items: center; gap: 8px;
+    flex: 0 1 240px; min-width: 52px; height: var(--bar-h); padding: 4px 3px 0 10px;
+    color: var(--tab-idle);
+    -webkit-app-region: no-drag;
+  }
+  .tab::before { content: ""; position: absolute; inset: 4px 0 0; z-index: -1; border-radius: 6px 6px 0 0; pointer-events: none; }
+  .tab:hover { color: var(--fg); }
+  .tab:hover::before { background: var(--hover); }
+  .tab.active { color: var(--fg); font-weight: 600; }
+  /* 활성 탭 윤곽: 위·양옆만 그어 아래 작업 영역과는 이어지게 */
+  .tab.active::before { bottom: -1px; background: var(--surface); border: 1px solid var(--line); border-bottom: 0; }
+  /* 비활성 탭 사이 구분선. 활성·호버 탭 양옆에서는 숨김 */
+  .tab::after { content: ""; position: absolute; right: 0; top: 11px; bottom: 7px; width: 1px; background: var(--line); }
+  .tab.active::after, .tab:hover::after, .tab:has(+ .tab.active)::after, .tab:has(+ .tab:hover)::after, .tab:has(+ #add)::after { display: none; }
+  .tab img { width: 16px; height: 16px; flex: none; opacity: .6; }
+  .tab:hover img, .tab.active img { opacity: 1; }
+  .tab .title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .tab .x { flex: none; display: grid; place-items: center; width: 24px; height: 20px; border-radius: 4px; font: 9px var(--icon); visibility: hidden; }
+  .tab:hover .x, .tab.active .x, .tab .x:focus-visible { visibility: visible; }
+  .tab .x:hover { background: var(--hover); }
+  .tab .x:active { background: var(--press); }
+  .tab.dragging { z-index: 1; color: var(--fg); }
+  .tab.dragging::before { background: var(--surface); box-shadow: 0 4px 16px rgb(0 0 0 / .28); }
+  .tab.dragging::after { display: none; }
   .tab.out { opacity: .5; }
-  #bar.drop { box-shadow: inset 0 0 0 2px var(--accent); background: #2f3a52; }
-  #picker.on { display: block; }
-  #picker h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
-  #picker ul { list-style: none; margin: 0; padding: 0; max-width: 720px; }
-  #picker li { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 6px; }
-  #picker li:hover { background: var(--tab); }
-  #picker li img { width: 20px; height: 20px; }
-  #picker li .t { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  #picker li .e { color: var(--muted); font-size: 12px; }
+
+  #add {
+    flex: none; display: grid; place-items: center; width: 32px; height: 22px; margin: 0 0 2px 4px;
+    border-radius: 4px; color: var(--muted); font: 11px var(--icon);
+    -webkit-app-region: no-drag;
+  }
+  #add:hover, #add.on { background: var(--hover); color: var(--fg); }
+  #add:active { background: var(--press); }
+
+  #bar .grow { flex: 1 0 48px; }
+  /* OS 캡션 버튼과 같은 크기·모양으로 맞춰 그 무리의 하나처럼 보이게 */
+  #settings-btn {
+    flex: none; display: grid; place-items: center; width: 46px; height: var(--bar-h);
+    color: var(--fg); font: 12px var(--icon);
+    -webkit-app-region: no-drag;
+  }
+  #settings-btn:hover, #settings-btn.on { background: var(--hover); }
+  #settings-btn:active { background: var(--press); }
+
+  /* 다른 창을 끌어 놓을 자리 위에 올렸을 때: 평소엔 탭 줄, 창 선택 목록을 연 동안엔 작업 영역 전체 */
+  #bar.drop::before, #stage.drop::after {
+    content: "놓으면 탭으로 추가"; position: absolute; inset: 4px 4px 0; z-index: 2;
+    display: grid; place-items: center; border: 1px dashed var(--accent); border-bottom: 0; border-radius: 8px 8px 0 0;
+    background: color-mix(in srgb, var(--accent) 22%, var(--surface)); color: var(--fg); font-weight: 600;
+  }
+  #stage.drop::after { inset: 12px; border-bottom: 1px dashed var(--accent); border-radius: 8px; font-size: 16px; }
+
+  /* ---- 탭 줄 아래 작업 영역 ---- */
+  #stage { position: fixed; inset: var(--bar-h) 0 0 0; background: var(--surface); }
+
+  #empty { height: 100%; display: grid; place-items: center; padding: 32px; }
+  #empty .inner { width: min(460px, 100%); }
+  #empty svg { display: block; margin-bottom: 28px; color: var(--faint); }
+  #empty h1 { margin: 0 0 8px; font: 600 20px/28px "Segoe UI Variable Display", "Segoe UI", "Malgun Gothic", sans-serif; }
+  #empty p { margin: 0; font-size: 14px; line-height: 22px; color: var(--muted); }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 24px 0 36px; }
+  .btn { height: 32px; padding: 0 16px; border-radius: 4px; font-size: 14px; background: var(--hover); border: 1px solid var(--line); }
+  .btn:hover { background: color-mix(in srgb, var(--hover), var(--fg) 4%); }
+  .btn.primary { background: var(--accent); border-color: transparent; color: #fff; }
+  .btn.primary:hover { background: color-mix(in srgb, var(--accent), #fff 10%); }
+  .btn:disabled { opacity: .55; }
+  .help { display: grid; grid-template-columns: max-content 1fr; align-items: center; gap: 10px 20px; margin: 0; padding-top: 20px; border-top: 1px solid var(--line); font-size: 12px; }
+  .help dt { color: var(--fg); }
+  .help dd { margin: 0; color: var(--muted); }
+  kbd { display: inline-block; min-width: 22px; padding: 1px 6px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; background: var(--key); font: 11px/16px "Segoe UI", sans-serif; text-align: center; }
+
+  .panel { height: 100%; overflow: auto; padding: 24px 24px 32px; }
+  .panel header { display: flex; align-items: baseline; justify-content: space-between; max-width: 760px; margin: 0 auto 12px; }
+  .panel h2 { margin: 0; font: 600 16px/24px "Segoe UI Variable Display", "Segoe UI", "Malgun Gothic", sans-serif; }
+  .panel header span { color: var(--faint); }
+  #picker ul { list-style: none; max-width: 760px; margin: 0 auto; padding: 0; }
+  #picker .row { display: flex; align-items: center; gap: 12px; width: 100%; height: 40px; padding: 0 12px; border-radius: 4px; text-align: left; font-size: 13px; }
+  #picker .row:hover { background: var(--hover); }
+  #picker .row:active { background: var(--press); }
+  #picker .row img { width: 20px; height: 20px; flex: none; }
+  #picker .t { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  #picker .e { flex: none; color: var(--faint); font-size: 12px; }
+  #picker .note { padding: 10px 12px; color: var(--muted); }
+
+  /* 설정 항목: 왼쪽 설명, 오른쪽 조작 */
+  .field { display: flex; align-items: center; justify-content: space-between; gap: 24px; max-width: 760px; margin: 0 auto 4px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 6px; background: var(--key); }
+  .field .label { display: grid; gap: 2px; font-size: 13px; }
+  .field .label span { color: var(--muted); font-size: 12px; }
+  .seg { display: flex; flex: none; padding: 2px; border: 1px solid var(--line); border-radius: 6px; }
+  .seg label { position: relative; padding: 4px 14px; border-radius: 4px; font-size: 12px; }
+  .seg input, .switch input { position: absolute; opacity: 0; inset: 0; margin: 0; }
+  .seg label:hover { background: var(--hover); }
+  .seg label:has(:checked) { background: var(--accent); color: #fff; }
+  .seg label:has(:focus-visible), .switch:has(:focus-visible) { outline: 2px solid var(--fg); outline-offset: 1px; }
+  .switch { position: relative; flex: none; width: 40px; height: 20px; border: 1px solid var(--muted); border-radius: 10px; }
+  .switch span { position: absolute; top: 3px; left: 3px; width: 12px; height: 12px; border-radius: 50%; background: var(--muted); }
+  .switch:has(:checked) { background: var(--accent); border-color: var(--accent); }
+  .switch:has(:checked) span { left: 23px; background: #fff; }
+
+  /* ---- 작업 공간(함께 실행할 프로그램 묶음) ---- */
+  .launch { margin: 0 0 28px; }
+  .launch h3, .panel h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; color: var(--muted); }
+  .launch-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px; }
+  .launch-btn { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--key); text-align: left; }
+  .launch-btn:hover { background: var(--hover); }
+  .launch-btn:disabled { opacity: .55; }
+  .launch-btn .name { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; }
+  .launch-btn .count { flex: none; color: var(--faint); font-size: 12px; }
+  /* 프로그램 아이콘 겹쳐 쌓기: 묶음 안에 무엇이 있는지 한눈에 */
+  .stack { display: flex; flex: none; }
+  .stack img { width: 18px; height: 18px; }
+  .stack img + img { margin-left: -6px; }
+  #picker .launch, #picker h3.sub { max-width: 760px; margin-left: auto; margin-right: auto; }
+  #picker .launch { margin-bottom: 20px; }
+
+  .settings-sub { display: flex; align-items: center; justify-content: space-between; max-width: 760px; margin: 28px auto 4px; }
+  .settings-sub h3 { margin: 0; font-size: 14px; color: var(--fg); }
+  .settings-hint { max-width: 760px; margin: 0 auto 12px; color: var(--muted); }
+  .btn.small { height: 28px; padding: 0 12px; font-size: 12px; }
+  .wsp { max-width: 760px; margin: 0 auto 6px; padding: 12px 16px 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--key); }
+  .wsp-head { display: flex; align-items: center; gap: 8px; }
+  .wsp-name { flex: 1; min-width: 0; height: 30px; padding: 0 8px; margin-left: -8px; border: 1px solid transparent; border-radius: 4px; background: none; color: var(--fg); font: 600 14px "Segoe UI Variable Text", "Segoe UI", "Malgun Gothic", sans-serif; }
+  .wsp-name:hover { border-color: var(--line); }
+  .wsp-name:focus { outline: none; border-color: var(--accent); background: var(--surface); }
+  .icon-btn { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 4px; color: var(--muted); font: 12px var(--icon); }
+  .icon-btn:hover { background: var(--hover); color: var(--fg); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 12px; }
+  .chip { display: flex; align-items: center; gap: 6px; max-width: 260px; height: 28px; padding: 0 2px 0 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
+  .chip img { width: 16px; height: 16px; flex: none; }
+  .chip span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .chip .icon-btn { width: 22px; height: 22px; font-size: 9px; }
+  .chips .none { color: var(--muted); line-height: 28px; }
+  .wsp-foot { display: flex; gap: 6px; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .tab, #add, #settings-btn, .btn, #picker .row, .launch-btn, .icon-btn { transition: background-color .12s; }
+    .switch span { transition: left .12s; }
+  }
 </style>
 </head>
 <body>
-<div id="bar"><button id="add" title="창 추가">+</button></div>
-<div id="empty"></div>
-<div id="picker"><h2>작업 공간에 넣을 창</h2><ul></ul></div>
+<div id="bar"><button id="add" title="창 추가 (열려 있는 창 목록)">&#xE710;</button><div class="grow"></div><button id="settings-btn" title="설정">&#xE713;</button></div>
+<main id="stage">
+  <section id="empty" hidden>
+    <div class="inner">
+      <svg width="168" height="88" viewBox="0 0 168 88" fill="none" aria-hidden="true">
+        <rect x="0.5" y="12.5" width="127" height="75" rx="6" stroke="currentColor"/>
+        <path d="M0.5 32.5h127" stroke="currentColor"/>
+        <path d="M8 32V24a4 4 0 0 1 4-4h28a4 4 0 0 1 4 4v8" stroke="currentColor"/>
+        <path d="M48 26h20" stroke="currentColor" stroke-linecap="round"/>
+        <rect x="112.5" y="0.5" width="55" height="38" rx="4" fill="var(--surface)" stroke="var(--accent)" stroke-dasharray="3 3"/>
+        <path d="M112.5 10.5h55" stroke="var(--accent)" stroke-dasharray="3 3"/>
+        <path d="M108 30c-8 0-16-1-24-4" stroke="var(--accent)" stroke-linecap="round"/>
+        <path d="M88 22l-4 4 5 3" stroke="var(--accent)" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <h1>탭으로 묶을 창을 추가하세요</h1>
+      <p>열려 있는 프로그램 창이 이 창 안에 탭으로 들어옵니다. 탭에서 빼면 원래 창으로 돌아갑니다.</p>
+      <div class="actions">
+        <button class="btn primary" id="pick">창 추가</button>
+        <button class="btn" id="restore" hidden></button>
+      </div>
+      <div class="launch" id="empty-launch" hidden><h3>작업 공간 열기</h3><div class="launch-list"></div></div>
+      <dl class="help">
+        <dt>다른 창을 이 화면으로 끌기</dt><dd>탭으로 추가</dd>
+        <dt>탭을 탭 줄 밖으로 끌기, 가운데 클릭</dt><dd>원래 창으로 분리</dd>
+        <dt><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd></dt><dd>이전 탭, 다음 탭</dd>
+        <dt><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>1</kbd>–<kbd>9</kbd></dt><dd>n번째 탭 (9는 마지막 탭)</dd>
+      </dl>
+    </div>
+  </section>
+  <section id="picker" class="panel" hidden>
+    <header><h2>탭으로 넣을 창</h2><span>다른 창을 여기로 끌어 놓아도 추가됩니다. Esc로 닫기</span></header>
+    <div class="launch" id="picker-launch" hidden><h3>작업 공간 열기</h3><div class="launch-list"></div></div>
+    <h3 class="sub" id="picker-sub" hidden>열려 있는 창</h3>
+    <ul></ul>
+  </section>
+  <section id="settings" class="panel" hidden>
+    <header><h2>설정</h2><span>Esc로 닫기</span></header>
+    <div class="field">
+      <div class="label">테마<span>탭 줄과 이 화면의 색입니다. 탭 안 프로그램의 색은 바뀌지 않습니다.</span></div>
+      <div class="seg" role="radiogroup" aria-label="테마">
+        <label><input type="radio" name="theme" value="system">시스템 설정</label>
+        <label><input type="radio" name="theme" value="light">라이트</label>
+        <label><input type="radio" name="theme" value="dark">다크</label>
+      </div>
+    </div>
+    <div class="field">
+      <div class="label">시작할 때 이전 작업 공간 복원<span>꺼져 있는 프로그램은 실행한 뒤 창이 뜰 때까지 기다립니다.</span></div>
+      <label class="switch"><input type="checkbox" id="auto-restore" aria-label="시작할 때 이전 작업 공간 복원"><span></span></label>
+    </div>
+    <div class="settings-sub"><h3>작업 공간</h3><button class="btn small" id="ws-new">새 작업 공간</button></div>
+    <p class="settings-hint">함께 실행할 프로그램을 묶어 둡니다. 열면 꺼져 있는 프로그램은 실행하고, 이미 열려 있는 창은 그대로 탭으로 가져옵니다.</p>
+    <div id="ws-list"></div>
+  </section>
+</main>
 <script src="renderer.js"></script>
 </body>
 </html>
