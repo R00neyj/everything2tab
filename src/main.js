@@ -520,7 +520,14 @@ function poll() {
       // 프로그램의 최소화 버튼 → 작업 공간을 최소화
       w32.restore(iconic.hwnd);
       win.minimize();
-    } else if (!w32.mouseDown()) {
+    } else if (w32.mouseDown()) {
+      followEdge(t, fg);
+    } else {
+      downSize = null;
+      if (edgeDrag) {
+        edgeDrag = false;
+        changed = true; // 바뀐 비율 저장, 렌더러에 알림
+      }
       // 제목 표시줄로 끌어서 옮겼거나 크기를 바꿨으면, 마우스를 놓은 뒤 제자리로
       let minChanged = false;
       layout(t).rects.forEach((c, i) => {
@@ -547,6 +554,44 @@ function poll() {
     }
   }
   if (changed) sendTabs();
+}
+
+// 분할 탭 창의 안쪽 가장자리를 끌어 크기를 바꾸는 중이면, 그 크기를 비율로 받아 나머지 창을 따라 맞춤
+// 창 사이 틈은 좁고 양옆 창의 보이지 않는 크기 조절 테두리가 틈을 거의 덮어서, 렌더러 막대보다 이쪽에 잡히는 경우가 많음
+// 바깥 가장자리나 제목 표시줄로 옮긴 것은 무시: 마우스를 놓으면 poll이 제자리로 되돌림
+let edgeDrag = false;
+let downSize = null; // 마우스를 누를 때 앞에 있던 탭 창의 크기 { hwnd, w, h }. 그 뒤에 바뀐 것만 끌기로 봄
+function followEdge(t, fg) {
+  if (t.panes.length < 2) return;
+  // 끄는 창은 누르는 순간 앞으로 옴. 렌더러 막대를 끄는 중이면 host가 앞이라 여기서는 건드리지 않음
+  const i = t.panes.findIndex((p) => p.hwnd === fg);
+  if (i < 0) return;
+  const p = t.panes[i], v = w32.visibleRect(p.hwnd);
+  if (downSize?.hwnd !== p.hwnd) downSize = { hwnd: p.hwnd, w: v.w, h: v.h };
+  if (v.w === downSize.w && v.h === downSize.h) return;
+  const c = contentRect();
+  const r = layout(t).rects[i];
+  const cols = COLS[t.panes.length];
+  const near = (a, b) => Math.abs(a - b) <= 1;
+  const left = cols[0].includes(i);
+  const col = cols[left ? 0 : 1];
+  let moved = false;
+  if (!near(v.w, r.w)) {
+    // 왼쪽 열은 오른쪽 가장자리, 오른쪽 열은 왼쪽 가장자리가 안쪽
+    if (left && near(v.x, r.x)) { t.ratio.x = clampRatio(v.w / (c.w - GAP)); moved = true; }
+    if (!left && near(v.x + v.w, r.x + r.w)) { t.ratio.x = clampRatio((v.x - c.x - GAP) / (c.w - GAP)); moved = true; }
+  }
+  if (!near(v.h, r.h) && col.length > 1) {
+    // 위 칸은 아래 가장자리, 아래 칸은 위 가장자리가 안쪽
+    if (col[0] === i && near(v.y, r.y)) { t.ratio.y = clampRatio(v.h / (c.h - GAP)); moved = true; }
+    if (col[1] === i && near(v.y + v.h, r.y + r.h)) { t.ratio.y = clampRatio((v.y - c.y - GAP) / (c.h - GAP)); moved = true; }
+  }
+  if (!moved) return;
+  edgeDrag = true;
+  // 끌고 있는 창은 OS가 크기를 바꾸는 중이라 건드리지 않음
+  const next = layout(t);
+  next.rects.forEach((nr, k) => { if (k !== i) w32.fitVisible(t.panes[k].hwnd, nr); });
+  win.webContents.send('bars', { gap: GAP, bars: next.bars });
 }
 
 function releaseAll() {
