@@ -1,0 +1,17 @@
+{
+  "name": "everything2tab",
+  "version": "0.1.0",
+  "description": "열려 있는 프로그램 창을 고정 탭 바가 있는 작업 공간 창에 묶는 Windows 프로그램",
+  "main": "src/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev:electron": "electron ."
+  },
+  "dependencies": {
+    "koffi": "^3.3.3"
+  },
+  "devDependencies": {
+    "electron": "^45.0.0"
+  }
+}

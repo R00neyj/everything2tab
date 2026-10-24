@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'">
+<title>everything2tab</title>
+<style>
+  :root { --bg: #1e1f22; --bar: #2b2d31; --tab: #383a40; --fg: #e6e6e6; --muted: #9a9ca3; --accent: #5b8def; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13px "Segoe UI", "Malgun Gothic", sans-serif; user-select: none; }
+  #bar { height: 40px; display: flex; align-items: flex-end; gap: 2px; padding: 0 8px; background: var(--bar); }
+  .tab { display: flex; align-items: center; gap: 8px; height: 34px; min-width: 60px; max-width: 220px; flex: 0 1 220px; padding: 0 8px 0 12px; border-radius: 8px 8px 0 0; color: var(--muted); cursor: default; }
+  .tab:hover { background: #33353b; }
+  .tab.active { background: var(--tab); color: var(--fg); box-shadow: inset 0 2px 0 var(--accent); }
+  .tab img { width: 16px; height: 16px; flex: none; }
+  .tab .title { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .tab .x { flex: none; width: 20px; height: 20px; border: 0; border-radius: 4px; background: none; color: inherit; font-size: 14px; line-height: 1; visibility: hidden; }
+  .tab:hover .x, .tab.active .x { visibility: visible; }
+  .tab .x:hover { background: #4a4d55; }
+  #add { flex: none; width: 30px; height: 30px; margin: 0 0 2px 4px; border: 0; border-radius: 6px; background: none; color: var(--muted); font-size: 20px; }
+  #add:hover, #add.on { background: var(--tab); color: var(--fg); }
+  #empty, #picker { position: absolute; inset: 40px 0 0 0; padding: 24px; }
+  #picker { display: none; overflow: auto; background: var(--bg); }
+  #empty { display: grid; place-content: center; gap: 4px; color: var(--muted); text-align: center; line-height: 1.8; }
+  .restore { margin-top: 16px; padding: 8px 16px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; font: inherit; }
+  .restore:disabled { opacity: .6; }
+  .tab.dragging { position: relative; z-index: 1; background: var(--tab); }
+  .tab.out { opacity: .5; }
+  #bar.drop { box-shadow: inset 0 0 0 2px var(--accent); background: #2f3a52; }
+  #picker.on { display: block; }
+  #picker h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+  #picker ul { list-style: none; margin: 0; padding: 0; max-width: 720px; }
+  #picker li { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 6px; }
+  #picker li:hover { background: var(--tab); }
+  #picker li img { width: 20px; height: 20px; }
+  #picker li .t { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  #picker li .e { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="bar"><button id="add" title="창 추가">+</button></div>
+<div id="empty"></div>
+<div id="picker"><h2>작업 공간에 넣을 창</h2><ul></ul></div>
+<script src="renderer.js"></script>
+</body>
+</html>
