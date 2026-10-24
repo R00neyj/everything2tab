@@ -195,6 +195,84 @@ document.getElementById('ws-new').addEventListener('click', async () => {
   renderWorkspaceSettings();
 });
 
+// ---- 실행 중인 프로그램(탭 + 열려 있는 창)을 골라 작업 공간 만들기 ----
+
+const wsRunning = document.getElementById('ws-running');
+let running = []; // [{ exe, title, icon, tab, on }]
+
+function closeRunning() {
+  running = [];
+  wsRunning.hidden = true;
+  wsRunning.replaceChildren();
+}
+
+async function openRunning() {
+  const wins = await ws.listWindows();
+  if (overlay !== 'settings') return;
+  const seen = new Set();
+  running = [...latest.tabs.map((t) => ({ ...t, tab: true })), ...wins.map((w) => ({ ...w, tab: false }))]
+    .filter((x) => {
+      if (!x.exe) return false;
+      const key = `${x.exe.toLowerCase()}\n${x.title}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((x) => ({ exe: x.exe, title: x.title, icon: x.icon, tab: x.tab, on: true }));
+
+  const count = el('span', 'count');
+  const create = el('button', 'btn primary small', '만들기');
+  const toggle = el('button', 'btn small');
+  const sync = () => {
+    const n = running.filter((x) => x.on).length;
+    count.textContent = `${running.length}개 중 ${n}개 선택`;
+    create.disabled = !n;
+    toggle.textContent = n === running.length ? '모두 해제' : '모두 선택';
+    toggle.disabled = !running.length;
+  };
+
+  const rows = el('ul', 'run-list');
+  if (!running.length) rows.append(el('li', 'none', '넣을 수 있는 실행 중인 프로그램 창이 없습니다.'));
+  const boxes = running.map((x) => {
+    const box = el('input');
+    box.type = 'checkbox';
+    box.checked = true;
+    box.addEventListener('change', () => { x.on = box.checked; sync(); });
+    const row = el('label', 'run-row');
+    row.title = x.exe;
+    row.append(box, icon(x.icon), el('span', 't', x.title || baseName(x.exe)), el('span', 'e', `${baseName(x.exe)}${x.tab ? ' · 탭' : ''}`));
+    const li = el('li');
+    li.append(row);
+    rows.append(li);
+    return box;
+  });
+
+  toggle.addEventListener('click', () => {
+    const on = running.some((x) => !x.on);
+    running.forEach((x, i) => { x.on = on; boxes[i].checked = on; });
+    sync();
+  });
+  create.addEventListener('click', async () => {
+    const items = running.filter((x) => x.on).map((x) => ({ exe: x.exe, title: x.title }));
+    closeRunning();
+    focusWorkspace = await ws.createWorkspace('', items);
+    renderWorkspaceSettings();
+  });
+  const cancel = el('button', 'btn small', '취소');
+  cancel.addEventListener('click', closeRunning);
+
+  const head = el('div', 'wsp-head');
+  head.append(el('span', 'wsp-title', '실행 중인 프로그램으로 만들기'), count);
+  const foot = el('div', 'wsp-foot');
+  foot.append(create, toggle, cancel);
+  wsRunning.replaceChildren(head, rows, foot);
+  wsRunning.hidden = false;
+  sync();
+  (boxes[0] || create).focus();
+}
+
+document.getElementById('ws-from-running').addEventListener('click', openRunning);
+
 bar.addEventListener('pointermove', (e) => {
   if (!drag) return;
   const dx = e.clientX - drag.x0;
@@ -270,16 +348,49 @@ async function openPicker() {
 
 async function openSettings() {
   setOverlay('settings');
+  closeRunning();
   const s = await ws.getSettings();
   for (const input of settingsPanel.querySelectorAll('input[name="theme"]')) input.checked = input.value === s.theme;
   settingsPanel.querySelector('#auto-restore').checked = s.autoRestore;
+  settingsPanel.querySelector('#auto-update').checked = s.autoUpdate;
+  renderUpdate(await ws.updateState());
 }
 
 settingsPanel.addEventListener('change', (e) => {
   const t = e.target;
   if (t.name === 'theme') ws.setSetting('theme', t.value);
   else if (t.id === 'auto-restore') ws.setSetting('autoRestore', t.checked);
+  else if (t.id === 'auto-update') ws.setSetting('autoUpdate', t.checked);
 });
+
+// ---- 자동 업데이트 상태 ----
+
+const updateStatus = document.getElementById('update-status');
+const updateBtn = document.getElementById('update-btn');
+let update = null;
+
+function renderUpdate(s) {
+  update = s;
+  const v = `현재 버전 ${s.version}`;
+  const text = {
+    unsupported: s.reason === 'portable' ? `${v} · 포터블 버전은 자동 업데이트를 지원하지 않습니다. 설치형을 쓰세요.` : `${v} · 개발 실행에서는 업데이트를 확인하지 않습니다.`,
+    idle: v,
+    checking: `${v} · 새 버전 확인 중…`,
+    latest: `${v} · 최신 버전입니다.`,
+    downloading: `${v} · ${s.next} 받는 중… ${s.percent}%`,
+    ready: `${v} · ${s.next} 준비됨. 다시 시작하거나 종료하면 설치됩니다.`,
+    error: `${v} · 업데이트 확인 실패: ${s.message}`,
+  }[s.status];
+  updateStatus.textContent = text;
+  const ready = s.status === 'ready';
+  updateBtn.textContent = ready ? '다시 시작해 설치' : '지금 확인';
+  updateBtn.classList.toggle('primary', ready);
+  updateBtn.disabled = ['unsupported', 'checking', 'downloading'].includes(s.status);
+  settingsPanel.querySelector('#auto-update').disabled = s.status === 'unsupported';
+}
+
+ws.onUpdate(renderUpdate);
+updateBtn.addEventListener('click', () => (update?.status === 'ready' ? ws.installUpdate() : ws.checkUpdate()));
 
 addBtn.addEventListener('click', () => (overlay === 'picker' ? closeOverlay() : openPicker()));
 settingsBtn.addEventListener('click', () => (overlay === 'settings' ? closeOverlay() : openSettings()));

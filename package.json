@@ -6,12 +6,47 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "dev:electron": "electron ."
+    "dev:electron": "electron .",
+    "dist": "electron-builder --win --x64 --publish never"
+  },
+  "build": {
+    "appId": "com.r00neyj.everything2tab",
+    "productName": "everything2tab",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "R00neyj",
+      "repo": "everything2tab"
+    },
+    "detectUpdateChannel": false,
+    "win": {
+      "icon": "src/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "${productName}-${version}-setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
+    }
   },
   "dependencies": {
+    "electron-updater": "^6.8.11",
     "koffi": "^3.3.3"
   },
   "devDependencies": {
-    "electron": "^45.0.0"
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0"
   }
 }

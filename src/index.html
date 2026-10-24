@@ -151,6 +151,7 @@
   .switch span { position: absolute; top: 3px; left: 3px; width: 12px; height: 12px; border-radius: 50%; background: var(--muted); }
   .switch:has(:checked) { background: var(--accent); border-color: var(--accent); }
   .switch:has(:checked) span { left: 23px; background: #fff; }
+  .field .ctl { display: flex; flex: none; align-items: center; gap: 12px; }
 
   /* ---- 작업 공간(함께 실행할 프로그램 묶음) ---- */
   .launch { margin: 0 0 28px; }
@@ -186,6 +187,17 @@
   .chip .icon-btn { width: 22px; height: 22px; font-size: 9px; }
   .chips .none { color: var(--muted); line-height: 28px; }
   .wsp-foot { display: flex; gap: 6px; }
+  /* 실행 중인 프로그램 골라서 작업 공간 만들기 */
+  .wsp-title { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; }
+  .wsp-head .count { flex: none; color: var(--faint); font-size: 12px; }
+  .run-list { list-style: none; max-height: 320px; overflow: auto; margin: 10px 0 12px; padding: 0; }
+  .run-row { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 8px; border-radius: 4px; font-size: 13px; }
+  .run-row:hover { background: var(--hover); }
+  .run-row input { flex: none; margin: 0; accent-color: var(--accent); }
+  .run-row img { width: 16px; height: 16px; flex: none; }
+  .run-row .t { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .run-row .e { flex: none; color: var(--faint); font-size: 12px; }
+  .run-list .none { padding: 8px; color: var(--muted); }
 
   @media (prefers-reduced-motion: no-preference) {
     .tab, #add, #settings-btn, .btn, #picker .row, .launch-btn, .icon-btn { transition: background-color .12s; }
@@ -218,7 +230,7 @@
       <dl class="help">
         <dt>다른 창을 이 화면으로 끌기</dt><dd>탭으로 추가</dd>
         <dt>탭을 탭 줄 밖으로 끌기, 가운데 클릭</dt><dd>원래 창으로 분리</dd>
-        <dt><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd></dt><dd>이전 탭, 다음 탭</dd>
+        <dt><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>←</kbd> <kbd>→</kbd> 또는 <kbd>PgUp</kbd> <kbd>PgDn</kbd></dt><dd>이전 탭, 다음 탭</dd>
         <dt><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>1</kbd>–<kbd>9</kbd></dt><dd>n번째 탭 (9는 마지막 탭)</dd>
       </dl>
     </div>
@@ -243,8 +255,16 @@
       <div class="label">시작할 때 이전 작업 공간 복원<span>꺼져 있는 프로그램은 실행한 뒤 창이 뜰 때까지 기다립니다.</span></div>
       <label class="switch"><input type="checkbox" id="auto-restore" aria-label="시작할 때 이전 작업 공간 복원"><span></span></label>
     </div>
-    <div class="settings-sub"><h3>작업 공간</h3><button class="btn small" id="ws-new">새 작업 공간</button></div>
+    <div class="field">
+      <div class="label">자동 업데이트<span>켜 두면 시작할 때와 6시간마다 GitHub 릴리즈를 확인하고, 새 버전을 받아 두었다가 종료할 때 설치합니다.</span><span id="update-status"></span></div>
+      <div class="ctl">
+        <button class="btn small" id="update-btn">지금 확인</button>
+        <label class="switch"><input type="checkbox" id="auto-update" aria-label="자동 업데이트"><span></span></label>
+      </div>
+    </div>
+    <div class="settings-sub"><h3>작업 공간</h3><div class="wsp-foot"><button class="btn small" id="ws-from-running">실행 중인 프로그램으로 만들기</button><button class="btn small" id="ws-new">새 작업 공간</button></div></div>
     <p class="settings-hint">함께 실행할 프로그램을 묶어 둡니다. 열면 꺼져 있는 프로그램은 실행하고, 이미 열려 있는 창은 그대로 탭으로 가져옵니다.</p>
+    <div class="wsp" id="ws-running" hidden></div>
     <div id="ws-list"></div>
   </section>
 </main>

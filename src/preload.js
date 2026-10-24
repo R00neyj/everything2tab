@@ -21,4 +21,8 @@ contextBridge.exposeInMainWorld('ws', {
   pickPrograms: () => ipcRenderer.invoke('pick-programs'),
   onDropHint: (cb) => ipcRenderer.on('drop-hint', (_e, zone) => cb(zone)),
   onCloseOverlay: (cb) => ipcRenderer.on('close-overlay', () => cb()),
+  updateState: () => ipcRenderer.invoke('update-state'),
+  checkUpdate: () => ipcRenderer.send('update-check'),
+  installUpdate: () => ipcRenderer.send('update-install'),
+  onUpdate: (cb) => ipcRenderer.on('update', (_e, state) => cb(state)),
 });

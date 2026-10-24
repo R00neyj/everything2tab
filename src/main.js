@@ -3,6 +3,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { app, BrowserWindow, ipcMain, Menu, globalShortcut, nativeTheme, systemPreferences, dialog, shell } = require('electron');
 const w32 = require('./win32');
+const updater = require('./updater');
 
 let win;
 let host = 0; // 작업 공간 창 HWND
@@ -264,6 +265,8 @@ function reorder(hwnd, to) {
 const shortcuts = {
   'Control+Alt+PageDown': () => activateOffset(1),
   'Control+Alt+PageUp': () => activateOffset(-1),
+  'Control+Alt+Right': () => activateOffset(1),
+  'Control+Alt+Left': () => activateOffset(-1),
 };
 for (let n = 1; n <= 9; n++) {
   shortcuts[`Control+Alt+${n}`] = () => { const t = n === 9 ? tabs.at(-1) : tabs[n - 1]; if (t) activate(t.hwnd); };
@@ -383,8 +386,8 @@ async function applyAccent() {
 // ---- 설정 ----
 
 let settingsFile;
-const settings = { theme: 'system', autoRestore: false };
-const settingChoices = { theme: ['system', 'light', 'dark'], autoRestore: [true, false] };
+const settings = { theme: 'system', autoRestore: false, autoUpdate: true };
+const settingChoices = { theme: ['system', 'light', 'dark'], autoRestore: [true, false], autoUpdate: [true, false] };
 
 function loadSettings() {
   try {
@@ -398,6 +401,7 @@ function setSetting(key, value) {
   if (!settingChoices[key]?.includes(value)) return;
   settings[key] = value;
   if (key === 'theme') nativeTheme.themeSource = value;
+  if (key === 'autoUpdate') updater.setEnabled(value);
   fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
 }
 
@@ -417,6 +421,7 @@ app.whenReady().then(() => {
     titleBarStyle: 'hidden',
     titleBarOverlay: captionOverlay(),
     title: 'everything2tab',
+    icon: path.join(__dirname, 'icon.ico'),
     webPreferences: { preload: path.join(__dirname, 'preload.js') },
   });
   host = Number(win.getNativeWindowHandle().readBigUInt64LE(0));
@@ -466,6 +471,10 @@ app.whenReady().then(() => {
   ipcMain.on('workspace-delete', (_e, id) => deleteWorkspace(id));
   ipcMain.handle('workspace-launch', (_e, id) => launchWorkspace(id));
   ipcMain.handle('pick-programs', pickPrograms);
+  ipcMain.handle('update-state', () => updater.getState());
+  ipcMain.on('update-check', () => updater.check());
+  ipcMain.on('update-install', () => updater.install());
+  updater.init(settings.autoUpdate, (state) => { if (!win.isDestroyed()) win.webContents.send('update', state); });
 
   setInterval(poll, 150);
 });
