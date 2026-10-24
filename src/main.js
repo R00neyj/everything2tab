@@ -10,8 +10,9 @@ let host = 0; // 작업 공간 창 HWND
 let barHeight = 40; // 탭 바 높이 (물리 픽셀, 렌더러가 알려 줌)
 let overlay = null; // 탭 줄 아래를 덮은 화면: null | 'picker' | 'settings'. 덮는 동안 활성 탭 창은 숨김
 let restoring = false;
-const tabs = []; // { hwnd, title, exe, icon }
-let active = 0;
+// 탭 하나에 창 하나, 또는 창 2~4개(분할 탭). ratio: { x: 왼쪽 열 비율, y: 위 칸 비율 }, focus: 그 탭에서 마지막으로 앞에 둔 창
+const tabs = []; // [{ panes: [{ hwnd, title, exe, icon, minW?, minH? }], ratio, focus }]
+let active = 0; // 앞에 있는(키 입력을 받는) 탭 창 HWND. 그 창이 든 탭이 보이는 탭
 const icons = new Map(); // exe 경로 → data URL
 let saveFile;
 let saved = []; // 마지막으로 저장한 그룹 [{ exe, title }]
@@ -28,9 +29,51 @@ function barRect() {
 
 const inside = (p, r) => p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h;
 
+const panes = () => tabs.flatMap((t) => t.panes);
+const tabOf = (hwnd) => tabs.find((t) => t.panes.some((p) => p.hwnd === hwnd));
+
+const GAP = 8; // 분할 탭의 창 사이 틈(물리 픽셀). 렌더러가 이 자리에 크기 조절 막대를 그림
+const MAX_PANES = 4;
+const clampRatio = (r) => (Number.isFinite(r) ? Math.min(0.85, Math.max(0.15, r)) : 0.5);
+// 창 수별 열 구성(열마다 위→아래 칸 번호). 2개 좌우, 3개 왼쪽 전체 + 오른쪽 위아래, 4개 2×2
+const COLS = { 1: [[0]], 2: [[0], [1]], 3: [[0], [1, 2]], 4: [[0, 2], [1, 3]] };
+
+// 탭의 창마다 차지할 사각형(rects)과 막대 자리(bars, 작업 영역 기준 좌표)
+// 열 너비는 ratio.x, 위아래로 나뉜 열의 위 칸 높이는 ratio.y. 창의 최소 크기(minW·minH, poll이 알아냄)만큼은 칸을 넓혀 줌
+function layout(t) {
+  const c = contentRect();
+  const cols = COLS[t.panes.length];
+  if (cols.length < 2) return { rects: [c], bars: [] };
+  const most = (ids, k) => Math.max(0, ...ids.map((i) => t.panes[i][k] || 0));
+  let lw = Math.round((c.w - GAP) * t.ratio.x);
+  lw = Math.max(Math.min(lw, c.w - GAP - most(cols[1], 'minW')), most(cols[0], 'minW'));
+  const xs = [{ x: c.x, w: lw }, { x: c.x + lw + GAP, w: c.w - lw - GAP }];
+  const split = cols.filter((col) => col.length > 1);
+  let th = Math.round((c.h - GAP) * t.ratio.y);
+  th = Math.max(Math.min(th, c.h - GAP - most(split.map((col) => col[1]), 'minH')), most(split.map((col) => col[0]), 'minH'));
+  const rects = [];
+  cols.forEach((col, k) => col.forEach((i, row) => {
+    const { x, w } = xs[k];
+    if (col.length < 2) rects[i] = { x, y: c.y, w, h: c.h };
+    else rects[i] = row ? { x, y: c.y + th + GAP, w, h: c.h - th - GAP } : { x, y: c.y, w, h: th };
+  }));
+  const bars = [{ axis: 'x', x: lw, y: 0, w: GAP, h: c.h }];
+  if (split.length === 2) bars.push({ axis: 'y', x: 0, y: th, w: c.w, h: GAP });
+  else if (split.length) bars.push({ axis: 'y', x: xs[1].x - c.x, y: th, w: xs[1].w, h: GAP });
+  return { rects, bars };
+}
+
+// 보이는 탭을 맞춤. 막대 자리는 렌더러에 알림
+function fitTab(t) {
+  const { rects, bars } = layout(t);
+  rects.forEach((r, i) => w32.fitVisible(t.panes[i].hwnd, r));
+  win.webContents.send('bars', { gap: GAP, bars });
+}
+
 function fitActive() {
-  if (!active || overlay || win.isMinimized()) return;
-  w32.fitVisible(active, contentRect());
+  const t = tabOf(active);
+  if (!t || overlay || win.isMinimized()) return;
+  fitTab(t);
 }
 
 // ---- 그룹 저장·복원 ----
@@ -46,19 +89,23 @@ function loadSaved() {
 function save() {
   // 빈 목록은 저장하지 않음: 시작 직후나 탭을 다 뺐을 때 "이전 작업 공간"이 지워지지 않게
   if (restoring || !tabs.length) return;
-  saved = tabs.filter((t) => t.exe).map((t) => ({ exe: t.exe, title: t.title }));
+  // 분할 탭의 둘째 창부터 split(비율 { x, y })을 달아 저장: 복원할 때 앞 창들과 다시 한 탭으로 묶음
+  saved = tabs.flatMap((t) => t.panes.filter((p) => p.exe)
+    .map((p, k) => (k ? { exe: p.exe, title: p.title, split: { ...t.ratio } } : { exe: p.exe, title: p.title })));
   fs.writeFileSync(saveFile, JSON.stringify(saved, null, 2));
 }
 
 function sendTabs() {
   if (!win || win.isDestroyed()) return;
   save();
+  const cur = tabOf(active);
+  const pane = (p) => ({ hwnd: p.hwnd, title: p.title, exe: p.exe, icon: p.icon, active: p.hwnd === active });
   win.webContents.send('tabs', {
-    tabs: tabs.map((t) => ({ ...t, active: t.hwnd === active })),
+    tabs: tabs.map((t) => ({ panes: t.panes.map(pane), active: t === cur })),
     saved: tabs.length ? 0 : saved.length,
   });
-  const cur = tabs.find((t) => t.hwnd === active);
-  win.setTitle(cur ? `${cur.title} - everything2tab` : 'everything2tab');
+  const title = cur?.panes.find((p) => p.hwnd === active)?.title;
+  win.setTitle(title ? `${title} - everything2tab` : 'everything2tab');
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -74,15 +121,17 @@ async function waitNewWindow(exe, before, ms = 15000) {
 }
 
 // 항목마다: 열려 있는 같은 프로그램 창(제목이 같으면 우선)을 쓰고, 없으면 실행해서 기다림
-// items: [{ exe, title, launch? }]. launch는 바로 가기(.lnk) 경로: 인수·작업 폴더까지 바로 가기 그대로 실행
+// items: [{ exe, title, launch?, split? }]. launch는 바로 가기(.lnk) 경로: 인수·작업 폴더까지 바로 가기 그대로 실행
+// split({ x, y } 비율)이 있으면 앞 항목들과 한 분할 탭으로 묶음
 // 반환: 탭으로 넣지 못한 프로그램 이름 목록. 이미 다른 묶음을 여는 중이면 null
 async function openItems(items) {
   if (restoring) return null;
   restoring = true;
   const failed = [];
+  let head = 0; // 지금 묶고 있는 분할 탭의 첫 창. split 항목은 이 창의 탭에 붙임
   try {
     for (const item of items) {
-      const taken = new Set([host, ...tabs.map((t) => t.hwnd)]);
+      const taken = new Set([host, ...panes().map((p) => p.hwnd)]);
       const open = w32.listAppWindows(taken).filter((x) => x.exe.toLowerCase() === item.exe.toLowerCase());
       let hwnd = (open.find((x) => x.title === item.title) || open[0] || {}).hwnd || 0;
       const launchable = item.launch ? fs.existsSync(item.launch) : fs.existsSync(item.exe);
@@ -92,8 +141,15 @@ async function openItems(items) {
         else spawn(item.exe, [], { detached: true, stdio: 'ignore' }).on('error', () => {}).unref();
         hwnd = await waitNewWindow(item.exe, before);
       }
-      if (hwnd) await addTab(hwnd);
-      else failed.push(path.basename(item.launch || item.exe));
+      const ratio = typeof item.split === 'number' ? { x: item.split, y: 0.5 } : item.split; // 숫자는 좌우 2칸 시절 형식
+      if (hwnd) {
+        await addTab(hwnd);
+        if (ratio && head) join(head, hwnd, ratio);
+        else head = hwnd;
+      } else {
+        failed.push(path.basename(item.launch || item.exe));
+        if (!ratio) head = 0;
+      }
     }
   } finally {
     restoring = false;
@@ -196,33 +252,118 @@ async function iconFor(exe) {
   return icons.get(exe);
 }
 
+// hwnd가 든 탭을 보여 주고 hwnd를 앞에 둠. 분할 탭이면 두 창을 함께 보여 줌
 function activate(hwnd) {
-  if (!tabs.some((t) => t.hwnd === hwnd)) return;
-  const prev = active;
+  const t = tabOf(hwnd);
+  if (!t) return;
   active = hwnd;
-  if (w32.api.IsZoomed(hwnd) || w32.api.IsIconic(hwnd)) w32.restore(hwnd);
-  w32.fitVisible(hwnd, contentRect());
-  if (!overlay) w32.showActivate(hwnd);
-  if (prev && prev !== hwnd) w32.hide(prev);
+  t.focus = hwnd;
+  for (const p of t.panes) if (w32.api.IsZoomed(p.hwnd) || w32.api.IsIconic(p.hwnd)) w32.restore(p.hwnd);
+  fitTab(t);
+  if (!overlay) for (const p of t.panes) (p.hwnd === hwnd ? w32.showActivate : w32.show)(p.hwnd);
+  // 다른 탭 창은 모두 숨김: 분할을 풀거나 합쳐서 창이 다른 탭으로 옮겨 간 경우도 함께 처리
+  for (const o of tabs) if (o !== t) for (const p of o.panes) w32.hide(p.hwnd);
   w32.api.SetForegroundWindow(hwnd);
   sendTabs();
 }
 
 function activateOffset(d) {
   if (!tabs.length) return;
-  const i = Math.max(0, tabs.findIndex((t) => t.hwnd === active));
-  activate(tabs[(i + d + tabs.length) % tabs.length].hwnd);
+  const i = Math.max(0, tabs.indexOf(tabOf(active)));
+  activate(tabs[(i + d + tabs.length) % tabs.length].focus);
 }
 
 async function addTab(hwnd) {
-  if (tabs.some((t) => t.hwnd === hwnd) || hwnd === host || !w32.api.IsWindow(hwnd)) return;
+  if (tabOf(hwnd) || hwnd === host || !w32.api.IsWindow(hwnd)) return;
   const exe = w32.getExePath(hwnd);
-  tabs.push({ hwnd, title: w32.getTitle(hwnd), exe, icon: await iconFor(exe) });
+  tabs.push({ panes: [{ hwnd, title: w32.getTitle(hwnd), exe, icon: await iconFor(exe) }], ratio: { x: 0.5, y: 0.5 }, focus: hwnd });
   // 소유자를 작업 공간 창으로: 항상 그 위에 그려지고 최소화·복원을 같이 따라감
   w32.setOwner(hwnd, host);
   w32.setEmbedded(hwnd, true);
   activate(hwnd);
 }
+
+// ---- 분할 탭: 창 2~4개를 한 탭에 나란히 (2개 좌우, 3개 왼쪽 + 오른쪽 위아래, 4개 2×2) ----
+
+// b 창을 a 창 탭의 다음 칸으로 옮김. b는 혼자 있는 탭이어야 하고, a 탭은 4칸 미만이어야 함
+// ratio: 복원할 때 쓰는 { x, y }. 없으면 지금 비율 유지
+function join(a, b, ratio) {
+  const ta = tabOf(a), tb = tabOf(b);
+  if (!ta || !tb || ta === tb || ta.panes.length >= MAX_PANES || tb.panes.length > 1) return;
+  tabs.splice(tabs.indexOf(tb), 1);
+  ta.panes.push(tb.panes[0]);
+  if (ratio) ta.ratio = { x: clampRatio(ratio.x), y: clampRatio(ratio.y) };
+  activate(b);
+}
+
+// hwnd 창 하나만 바로 뒤의 새 탭으로 떼어 냄. 원래 탭을 계속 보여 줌
+function popOut(hwnd) {
+  const t = tabOf(hwnd);
+  if (!t || t.panes.length < 2) return;
+  const [p] = t.panes.splice(t.panes.findIndex((x) => x.hwnd === hwnd), 1);
+  tabs.splice(tabs.indexOf(t) + 1, 0, { panes: [p], ratio: { x: 0.5, y: 0.5 }, focus: p.hwnd });
+  if (t.focus === hwnd) t.focus = t.panes[0].hwnd;
+  activate(t.focus);
+}
+
+// 모든 창을 각자 탭으로. 순서는 칸 순서대로 원래 탭 뒤에
+function unsplitAll(hwnd) {
+  const t = tabOf(hwnd);
+  if (!t || t.panes.length < 2) return;
+  const rest = t.panes.splice(1);
+  tabs.splice(tabs.indexOf(t) + 1, 0, ...rest.map((p) => ({ panes: [p], ratio: { x: 0.5, y: 0.5 }, focus: p.hwnd })));
+  t.focus = t.panes[0].hwnd;
+  activate(hwnd);
+}
+
+function swap(a, b) {
+  const t = tabOf(a);
+  if (!t || t !== tabOf(b)) return;
+  const i = t.panes.findIndex((p) => p.hwnd === a), j = t.panes.findIndex((p) => p.hwnd === b);
+  [t.panes[i], t.panes[j]] = [t.panes[j], t.panes[i]];
+  activate(a);
+}
+
+// 렌더러가 막대를 끄는 동안 계속 부름. axis: 'x'(세로 막대, 열 너비) | 'y'(가로 막대, 줄 높이). done이면 놓은 것: 렌더러에 알리고 저장
+function setRatio(hwnd, axis, ratio, done) {
+  const t = tabOf(hwnd);
+  if (!t || t.panes.length < 2 || (axis !== 'x' && axis !== 'y')) return;
+  t.ratio[axis] = clampRatio(ratio);
+  if (t === tabOf(active)) fitActive();
+  if (!done) return;
+  if (active) w32.api.SetForegroundWindow(active);
+  sendTabs();
+}
+
+// 탭 줄에서 탭(칸)을 오른쪽 클릭했을 때 메뉴. 메뉴는 OS가 그려서 탭 창 위에도 보임
+function tabMenu(hwnd) {
+  const t = tabOf(hwnd);
+  if (!t) return;
+  const label = (p) => (p.title || path.basename(p.exe) || '(제목 없음)').replaceAll('&', '&&');
+  const n = t.panes.length;
+  const items = [];
+  if (n < MAX_PANES) {
+    const others = tabs.filter((o) => o !== t && o.panes.length === 1).map((o) => o.panes[0]);
+    items.push(others.length
+      ? { label: '이 탭에 나란히 놓기', submenu: others.map((p) => ({ label: label(p), click: () => join(hwnd, p.hwnd) })) }
+      : { label: '이 탭에 나란히 놓기 (놓을 다른 탭 없음)', enabled: false });
+  }
+  if (n > 1) {
+    items.push(
+      { label: '자리 바꾸기', submenu: t.panes.filter((p) => p.hwnd !== hwnd).map((p) => ({ label: label(p), click: () => swap(hwnd, p.hwnd) })) },
+      { label: '이 창을 따로 탭으로', click: () => popOut(hwnd) },
+      { label: '분할 모두 해제', click: () => unsplitAll(hwnd) },
+      { type: 'separator' },
+      { label: '이 창만 탭에서 빼기', click: () => detach(hwnd) },
+      { label: `탭에서 빼기 (창 ${n}개 모두)`, click: () => detachTab(hwnd) },
+    );
+  } else {
+    items.push({ type: 'separator' }, { label: '탭에서 빼기', click: () => detachTab(hwnd) });
+  }
+  Menu.buildFromTemplate(items).popup({ window: win });
+}
+
+// ---- 탭에서 빼기 ----
 
 // 탭에서 빼서 원래 독립 창으로 되돌림
 function release(hwnd) {
@@ -231,31 +372,62 @@ function release(hwnd) {
   w32.show(hwnd);
 }
 
-// at: 분리한 창의 왼쪽 위를 둘 화면 좌표. 없으면 작업 공간 안쪽으로 살짝 비켜 놓음
+// 창을 탭 목록에서만 뺌. 분할 탭이면 남은 창이 그 탭을 혼자 차지함
+// 반환: 보이던 탭에서 뺐으면 이어서 보여 줄 창, 아니면 0
+function unlist(hwnd) {
+  const t = tabOf(hwnd);
+  if (!t) return 0;
+  const shown = t === tabOf(active);
+  const i = tabs.indexOf(t);
+  t.panes = t.panes.filter((p) => p.hwnd !== hwnd);
+  if (t.panes.length) t.focus = t.panes[0].hwnd;
+  else tabs.splice(i, 1);
+  if (active === hwnd) active = 0;
+  if (!shown) return 0;
+  const next = t.panes.length ? t : tabs[Math.min(i, tabs.length - 1)];
+  return next ? next.focus : 0;
+}
+
+// r: 탭 안에서 차지하던 칸. at: 왼쪽 위를 둘 화면 좌표. 없으면 그 칸 안쪽으로 살짝 비켜 놓음
+function setFree(hwnd, r, at) {
+  if (!w32.api.IsWindow(hwnd)) return;
+  release(hwnd);
+  const p = at || { x: r.x + 40, y: r.y + 40 };
+  w32.fitVisible(hwnd, { x: p.x, y: p.y, w: Math.round(r.w * 0.8), h: Math.round(r.h * 0.8) });
+  w32.api.SetForegroundWindow(hwnd);
+}
+
+// 창 하나만 뺌. 분할 탭이면 남은 창이 탭을 차지함
 function detach(hwnd, at) {
-  const i = tabs.findIndex((t) => t.hwnd === hwnd);
-  if (i < 0) return;
-  tabs.splice(i, 1);
-  if (w32.api.IsWindow(hwnd)) {
-    release(hwnd);
-    const c = contentRect();
-    const w = Math.round(c.w * 0.8), h = Math.round(c.h * 0.8);
-    const p = at || { x: c.x + 40, y: c.y + 40 };
-    w32.fitVisible(hwnd, { x: p.x, y: p.y, w, h });
-    w32.api.SetForegroundWindow(hwnd);
-  }
-  if (active === hwnd) {
-    active = 0;
-    const next = tabs[Math.min(i, tabs.length - 1)];
-    if (next) activate(next.hwnd);
-  }
+  const t = tabOf(hwnd);
+  if (!t) return;
+  const r = layout(t).rects[t.panes.findIndex((p) => p.hwnd === hwnd)];
+  const next = unlist(hwnd);
+  setFree(hwnd, r, at);
+  if (next) activate(next);
   sendTabs();
 }
 
+// 탭째로 뺌. 분할 탭이면 두 창이 각자 있던 칸 근처에 놓임
+function detachTab(hwnd) {
+  const t = tabOf(hwnd);
+  if (!t) return;
+  const { rects } = layout(t);
+  const shown = t === tabOf(active);
+  const i = tabs.indexOf(t);
+  tabs.splice(i, 1);
+  if (shown) active = 0;
+  t.panes.forEach((p, k) => setFree(p.hwnd, rects[k]));
+  const next = shown && tabs[Math.min(i, tabs.length - 1)];
+  if (next) activate(next.focus);
+  sendTabs();
+}
+
+// hwnd가 든 탭을 to번째 자리로
 function reorder(hwnd, to) {
-  const i = tabs.findIndex((t) => t.hwnd === hwnd);
-  if (i < 0) return;
-  const [t] = tabs.splice(i, 1);
+  const t = tabOf(hwnd);
+  if (!t) return;
+  tabs.splice(tabs.indexOf(t), 1);
   tabs.splice(Math.max(0, Math.min(to, tabs.length)), 0, t);
   sendTabs();
 }
@@ -269,7 +441,7 @@ const shortcuts = {
   'Control+Alt+Left': () => activateOffset(-1),
 };
 for (let n = 1; n <= 9; n++) {
-  shortcuts[`Control+Alt+${n}`] = () => { const t = n === 9 ? tabs.at(-1) : tabs[n - 1]; if (t) activate(t.hwnd); };
+  shortcuts[`Control+Alt+${n}`] = () => { const t = n === 9 ? tabs.at(-1) : tabs[n - 1]; if (t) activate(t.focus); };
 }
 let shortcutsOn = false;
 
@@ -295,7 +467,7 @@ function setDropHint(zone) {
 
 function trackDrop(fg) {
   const down = w32.mouseDown();
-  if (down && !drag && fg && fg !== host && !tabs.some((t) => t.hwnd === fg) && w32.isAppWindow(fg)) {
+  if (down && !drag && fg && fg !== host && !tabOf(fg) && w32.isAppWindow(fg)) {
     drag = { hwnd: fg, start: w32.visibleRect(fg) };
   }
   if (!drag) return;
@@ -320,42 +492,57 @@ function trackDrop(fg) {
 function poll() {
   if (!win || win.isDestroyed()) return;
   let changed = false;
-  for (let i = tabs.length - 1; i >= 0; i--) {
-    const t = tabs[i];
-    if (!w32.api.IsWindow(t.hwnd)) {
-      tabs.splice(i, 1);
-      if (active === t.hwnd) {
-        active = 0;
-        const next = tabs[Math.min(i, tabs.length - 1)];
-        if (next) activate(next.hwnd);
-      }
+  for (const p of panes()) {
+    if (!w32.api.IsWindow(p.hwnd)) {
+      const next = unlist(p.hwnd);
+      if (next) activate(next);
       changed = true;
       continue;
     }
-    const title = w32.getTitle(t.hwnd);
-    if (title !== t.title) { t.title = title; changed = true; }
+    const title = w32.getTitle(p.hwnd);
+    if (title !== p.title) { p.title = title; changed = true; }
   }
   const fg = w32.api.GetForegroundWindow();
-  setShortcuts(fg === host || tabs.some((t) => t.hwnd === fg));
+  setShortcuts(fg === host || !!tabOf(fg));
   trackDrop(fg);
-  // 숨겨 둔 탭이 다른 경로(작업 표시줄 등)로 앞에 나오면 그 탭으로 전환
-  if (fg && fg !== active && tabs.some((t) => t.hwnd === fg)) activate(fg);
+  // 숨겨 둔 탭이 다른 경로(작업 표시줄 등)로 앞에 나오면 그 탭으로 전환. 분할 탭에서 다른 쪽 창을 누른 경우도 여기서 앞 창을 바꿈
+  if (fg && fg !== active && tabOf(fg)) activate(fg);
 
-  if (active && !overlay && !win.isMinimized()) {
-    if (w32.api.IsZoomed(active)) {
+  const t = tabOf(active);
+  if (t && !overlay && !win.isMinimized()) {
+    const zoomed = t.panes.find((p) => w32.api.IsZoomed(p.hwnd));
+    const iconic = t.panes.find((p) => w32.api.IsIconic(p.hwnd));
+    if (zoomed) {
       // 프로그램의 최대화 버튼 → 작업 공간을 최대화
-      w32.restore(active);
+      w32.restore(zoomed.hwnd);
       win.maximize();
-    } else if (w32.api.IsIconic(active)) {
+    } else if (iconic) {
       // 프로그램의 최소화 버튼 → 작업 공간을 최소화
-      w32.restore(active);
+      w32.restore(iconic.hwnd);
       win.minimize();
     } else if (!w32.mouseDown()) {
       // 제목 표시줄로 끌어서 옮겼거나 크기를 바꿨으면, 마우스를 놓은 뒤 제자리로
-      const v = w32.visibleRect(active);
-      const c = contentRect();
-      if (Math.abs(v.x - c.x) > 1 || Math.abs(v.y - c.y) > 1 || Math.abs(v.w - c.w) > 1 || Math.abs(v.h - c.h) > 1) {
-        w32.fitVisible(active, c);
+      let minChanged = false;
+      layout(t).rects.forEach((c, i) => {
+        const p = t.panes[i];
+        const v = w32.visibleRect(p.hwnd);
+        if (Math.abs(v.x - c.x) <= 1 && Math.abs(v.y - c.y) <= 1 && Math.abs(v.w - c.w) <= 1 && Math.abs(v.h - c.h) <= 1) {
+          p.miss = null;
+          return;
+        }
+        // 같은 칸에 거듭 맞춰도 더 넓게 남으면 프로그램의 최소 너비로 봄. 분할 탭은 그만큼 칸을 넓혀 겹치지 않게 함
+        const key = `${c.x},${c.y},${c.w},${c.h}`;
+        p.miss = p.miss?.key === key ? { key, n: p.miss.n + 1 } : { key, n: 1 };
+        if (t.panes.length > 1 && p.miss.n >= 3 && (v.w > c.w + 1 || v.h > c.h + 1)) {
+          if (v.w > c.w + 1) p.minW = v.w;
+          if (v.h > c.h + 1) p.minH = v.h;
+          minChanged = true;
+        }
+        w32.fitVisible(p.hwnd, c);
+      });
+      if (minChanged) {
+        fitTab(t);
+        changed = true;
       }
     }
   }
@@ -363,7 +550,7 @@ function poll() {
 }
 
 function releaseAll() {
-  for (const t of tabs) if (w32.api.IsWindow(t.hwnd)) release(t.hwnd);
+  for (const p of panes()) if (w32.api.IsWindow(p.hwnd)) release(p.hwnd);
   tabs.length = 0;
   active = 0;
 }
@@ -444,14 +631,15 @@ app.whenReady().then(() => {
 
   ipcMain.on('bar-height', (_e, px) => { barHeight = Math.round(px); fitActive(); });
   ipcMain.handle('list-windows', async () => {
-    const exclude = new Set([host, ...tabs.map((t) => t.hwnd)]);
+    const exclude = new Set([host, ...panes().map((p) => p.hwnd)]);
     const list = w32.listAppWindows(exclude);
     return Promise.all(list.map(async (x) => ({ ...x, icon: await iconFor(x.exe) })));
   });
   ipcMain.on('overlay', (_e, name) => {
     overlay = name;
-    if (!active) return;
-    if (name) w32.hide(active);
+    const t = tabOf(active);
+    if (!t) return;
+    if (name) for (const p of t.panes) w32.hide(p.hwnd);
     else activate(active);
   });
   ipcMain.handle('get-settings', () => settings);
@@ -459,12 +647,15 @@ app.whenReady().then(() => {
   ipcMain.on('add', (_e, hwnd) => addTab(hwnd));
   ipcMain.on('activate', (_e, hwnd) => activate(hwnd));
   ipcMain.on('detach', (_e, hwnd) => detach(hwnd));
+  ipcMain.on('detach-tab', (_e, hwnd) => detachTab(hwnd));
   // 탭을 바 밖으로 끌어 놓음 → 마우스 위치에 독립 창으로
   ipcMain.on('detach-drop', (_e, hwnd) => {
     const p = w32.cursorPos();
     detach(hwnd, { x: p.x - 120, y: p.y - 15 });
   });
   ipcMain.on('reorder', (_e, hwnd, to) => reorder(hwnd, to));
+  ipcMain.on('tab-menu', (_e, hwnd) => tabMenu(hwnd));
+  ipcMain.on('split-ratio', (_e, hwnd, axis, ratio, done) => setRatio(hwnd, axis, ratio, done));
   ipcMain.handle('restore', restore);
   ipcMain.handle('workspace-create', (_e, name, items) => createWorkspace(name, items));
   ipcMain.on('workspace-update', (_e, id, patch) => updateWorkspace(id, patch));

@@ -25,34 +25,98 @@ function icon(src) {
   return img;
 }
 
-let latest = { tabs: [], saved: 0 };
-let drag = null; // { hwnd, el, x0, moved, out, to }
+let latest = { tabs: [], saved: 0 }; // tabs: [{ panes: [{ hwnd, title, exe, icon, active }], active }]
+let drag = null; // { hwnd, el, x0, moved, out, from, to }. hwnd: 누른 칸의 창
 let busy = null; // 지금 여는 묶음: 'restore' | 작업 공간 id | null. 한 번에 하나만 열 수 있음
 
+// 분할 탭은 탭 하나에 칸 2~4개. 칸을 누르면 그 창을 앞에 둠
 function render() {
   const { tabs, saved } = latest;
   for (const t of bar.querySelectorAll('.tab')) t.remove();
   tabs.forEach((t, i) => {
     const tab = el('div', t.active ? 'tab active' : 'tab');
-    tab.title = t.title;
+    if (t.panes.length > 1) { tab.classList.add('split'); tab.style.flexBasis = `${t.panes.length * 170}px`; }
+    for (const p of t.panes) {
+      const pane = el('div', p.active ? 'pane focus' : 'pane');
+      pane.title = p.title;
+      pane.append(icon(p.icon), el('span', 'title', p.title));
+      pane.addEventListener('pointerdown', (e) => {
+        if (e.button === 1) return ws.detach(p.hwnd);
+        if (e.button !== 0) return;
+        // 활성화는 놓을 때 함: 누르자마자 다른 창을 앞으로 보내면 포인터 캡처가 끊길 수 있음
+        tab.setPointerCapture(e.pointerId);
+        drag = { hwnd: p.hwnd, el: tab, x0: e.clientX, moved: false, out: false, from: i, to: i };
+      });
+      pane.addEventListener('contextmenu', (e) => { e.preventDefault(); ws.tabMenu(p.hwnd); });
+      tab.append(pane);
+    }
     const x = el('button', 'x', '\uE8BB');
-    x.title = '탭에서 빼기 (창은 닫히지 않음)';
-    tab.append(icon(t.icon), el('span', 'title', t.title), x);
-    tab.addEventListener('pointerdown', (e) => {
-      if (e.button === 1) return ws.detach(t.hwnd);
-      if (e.button !== 0 || e.target === x) return;
-      // 활성화는 놓을 때 함: 누르자마자 다른 창을 앞으로 보내면 포인터 캡처가 끊길 수 있음
-      tab.setPointerCapture(e.pointerId);
-      drag = { hwnd: t.hwnd, el: tab, x0: e.clientX, moved: false, out: false, from: i, to: i };
-    });
-    x.addEventListener('click', () => ws.detach(t.hwnd));
+    x.title = t.panes.length > 1 ? `탭에서 빼기 (창 ${t.panes.length}개 모두, 창은 닫히지 않음)` : '탭에서 빼기 (창은 닫히지 않음)';
+    x.addEventListener('click', () => ws.detachTab(t.panes[0].hwnd));
+    tab.append(x);
     bar.insertBefore(tab, addBtn);
   });
+  placeBars();
   empty.hidden = tabs.length > 0 || overlay !== null;
   restoreBtn.hidden = !saved;
   restoreBtn.disabled = busy !== null;
   restoreBtn.textContent = busy === 'restore' ? '복원 중… 꺼져 있는 프로그램은 실행해서 기다림' : `이전 작업 공간 복원 (${saved}개)`;
 }
+
+// ---- 분할 탭의 창 사이 크기 조절 막대 ----
+// 메인이 창 사이에 비워 둔 틈 자리(bars, 작업 영역 기준 물리 픽셀)를 받아 그림. 창(HWND)은 HTML 위에 그려지므로 틈에서만 보임
+// 세로 막대(axis 'x')는 열 너비, 가로 막대(axis 'y')는 위아래 칸 높이를 바꿈
+
+const stage = document.getElementById('stage');
+const dividers = document.getElementById('dividers');
+let layout = { gap: 0, bars: [] };
+let resizing = null; // { hwnd, axis, el, ratio } 막대를 끄는 동안. 이때는 다시 그리지 않음(포인터 캡처가 끊김)
+
+const splitTab = () => latest.tabs.find((t) => t.active && t.panes.length > 1);
+
+function placeBars() {
+  if (resizing) return;
+  const t = splitTab();
+  const on = t && overlay === null;
+  dividers.replaceChildren(...(on ? layout.bars : []).map((b) => {
+    const d = el('div', `divider ${b.axis}`);
+    d.title = '끌어서 크기 조절, 두 번 클릭하면 반반';
+    Object.assign(d.style, { left: `${b.x / devicePixelRatio}px`, top: `${b.y / devicePixelRatio}px`, width: `${b.w / devicePixelRatio}px`, height: `${b.h / devicePixelRatio}px` });
+    d.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      d.setPointerCapture(e.pointerId);
+      d.classList.add('drag');
+      resizing = { hwnd: t.panes[0].hwnd, axis: b.axis, el: d, ratio: null };
+    });
+    d.addEventListener('pointermove', (e) => {
+      if (resizing?.el !== d) return;
+      // 막대 가운데가 포인터에 오도록: 비율 = (위치 - 틈/2) / (전체 - 틈). 메인 layout과 같은 식
+      const r = stage.getBoundingClientRect();
+      const x = b.axis === 'x';
+      const pos = (x ? e.clientX - r.left : e.clientY - r.top) * devicePixelRatio;
+      const size = (x ? r.width : r.height) * devicePixelRatio;
+      resizing.ratio = Math.min(0.85, Math.max(0.15, (pos - layout.gap / 2) / (size - layout.gap))); // 메인의 clampRatio와 같은 범위
+      const at = (resizing.ratio * (size - layout.gap)) / devicePixelRatio;
+      d.style[x ? 'left' : 'top'] = `${at}px`;
+      ws.splitRatio(resizing.hwnd, b.axis, resizing.ratio, false);
+    });
+    const end = () => {
+      if (resizing?.el !== d) return;
+      const { hwnd, axis, ratio } = resizing;
+      resizing = null;
+      d.classList.remove('drag');
+      if (ratio === null) return; // 누르기만 함: 그대로 둬야 두 번 클릭이 같은 막대에 들어감
+      ws.splitRatio(hwnd, axis, ratio, true);
+      placeBars();
+    };
+    d.addEventListener('pointerup', end);
+    d.addEventListener('pointercancel', end);
+    d.addEventListener('dblclick', () => ws.splitRatio(t.panes[0].hwnd, b.axis, 0.5, true));
+    return d;
+  }));
+}
+
+ws.onBars((l) => { layout = l; placeBars(); });
 
 function report(failed) {
   if (failed === null) alert('다른 작업 공간을 여는 중입니다. 끝난 뒤 다시 시도하세요.');
@@ -90,7 +154,8 @@ let focusWorkspace = null; // 새로 만든 작업 공간: 다음에 그릴 때 
 
 const baseName = (p) => p.split('\\').pop().replace(/\.(exe|lnk)$/i, '');
 const itemLabel = (it) => it.title || baseName(it.launch || it.exe);
-const tabItems = () => latest.tabs.filter((t) => t.exe).map((t) => ({ exe: t.exe, title: t.title }));
+const tabWindows = () => latest.tabs.flatMap((t) => t.panes);
+const tabItems = () => tabWindows().filter((t) => t.exe).map((t) => ({ exe: t.exe, title: t.title }));
 const sameItem = (a, b) => a.exe.toLowerCase() === b.exe.toLowerCase() && a.title === b.title && (a.launch || '') === (b.launch || '');
 
 function addItems(w, items) {
@@ -210,7 +275,7 @@ async function openRunning() {
   const wins = await ws.listWindows();
   if (overlay !== 'settings') return;
   const seen = new Set();
-  running = [...latest.tabs.map((t) => ({ ...t, tab: true })), ...wins.map((w) => ({ ...w, tab: false }))]
+  running = [...tabWindows().map((t) => ({ ...t, tab: true })), ...wins.map((w) => ({ ...w, tab: false }))]
     .filter((x) => {
       if (!x.exe) return false;
       const key = `${x.exe.toLowerCase()}\n${x.title}`;
@@ -297,7 +362,6 @@ bar.addEventListener('pointerup', () => {
 });
 bar.addEventListener('pointercancel', () => { drag = null; render(); });
 
-const stage = document.getElementById('stage');
 ws.onDropHint((zone) => {
   bar.classList.toggle('drop', zone === 'bar');
   stage.classList.toggle('drop', zone === 'window');

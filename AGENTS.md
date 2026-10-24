@@ -9,28 +9,31 @@ everything2tab: Windows 전용 Electron 앱. 열려 있는 외부 프로그램 �
 - **창 붙이는 방식**: 외부 창을 Electron 안에 넣지 않음. 탭 줄은 HTML(`src/index.html`)이 그림. 외부 창은 Win32로 소유자(owner)를 host로 바꾸고(`setOwner`, GWLP_HWNDPARENT), 탭 줄 아래 영역(`contentRect()`)에 위치·크기를 맞춰 겹쳐 놓음. 비활성 탭 창은 숨김
 - **프로세스 구성**
   - `src/main.js`: 상태를 모두 가짐(`tabs[]`, `active`, `overlay`, `restoring`, `workspaces`, `settings`). IPC, 저장 파일, 단축키를 처리함
+    - `tabs[]`는 `{panes:[{hwnd,title,exe,icon,minW?,minH?}], ratio:{x,y}, focus}`. 창이 2~4개면 분할 탭(2개 좌우, 3개 왼쪽 + 오른쪽 위아래, 4개 2×2, `COLS`). `active`는 앞에 있는 창 HWND이고, 그 창이 든 탭이 보이는 탭
+    - 창 하나를 찾을 때는 `tabOf(hwnd)`, 모든 탭 창은 `panes()`를 씀
   - `src/preload.js`: `contextBridge`로 `window.ws`를 노출함
   - `src/renderer.js`: UI만 그림. 마지막으로 받은 `tabs` 메시지를 `latest`에 보관함
   - `src/win32.js`: koffi로 user32·kernel32·dwmapi를 바인딩함
   - `src/updater.js`: electron-updater 래퍼
 - **IPC**
-  - 렌더러 → 메인, 응답 없음(`send`): `add`, `activate`, `detach`, `detach-drop`, `reorder`, `overlay`, `bar-height`, `set-setting`, `workspace-update`, `workspace-delete`, `update-*`
+  - 렌더러 → 메인, 응답 없음(`send`): `add`, `activate`, `detach`, `detach-tab`, `detach-drop`, `reorder`, `tab-menu`, `split-ratio`, `overlay`, `bar-height`, `set-setting`, `workspace-update`, `workspace-delete`, `update-*`
   - 렌더러 → 메인, 응답 있음(`invoke`): `list-windows`, `get-settings`, `restore`, `workspace-create`, `workspace-launch`, `pick-programs`, `update-state`
-  - 메인 → 렌더러: `tabs`, `workspaces`, `drop-hint`, `close-overlay`, `update`
+  - 메인 → 렌더러: `tabs`, `bars`(분할 막대 자리), `workspaces`, `drop-hint`, `close-overlay`, `update`
   - 새 채널은 preload의 `ws.*`, `ipcMain`, 렌더러 세 곳을 같이 고침
 - **폴링**: `setInterval(poll, 150)`으로 외부 창 쪽 변화를 맞춤
   - 닫힌 창을 탭에서 빼고, 제목 변경을 반영함
   - 단축키를 켜고 끔. host나 탭 창이 앞에 있을 때만 켬
   - 끌어다 놓기를 감지함(`trackDrop`)
   - 탭 창이 최대화·최소화되면 그 상태를 host로 옮김
-  - 탭 창 위치가 1px 넘게 어긋나면 되돌림
+  - 보이는 탭 창 위치가 1px 넘게 어긋나면 되돌림. 같은 칸에 세 번 맞춰도 더 크게 남는 분할 탭 창은 그 크기를 최소 크기(`minW`·`minH`)로 보고 칸을 넓힘
   - 바뀐 게 있으면 `sendTabs()`를 호출함
 - **탭 흐름**
   - 탭 추가: `addTab` → `setOwner` + `setEmbedded(true)` → `activate`
-  - 탭 활성화: `activate` → `fitVisible` → 보여 주기 → 이전 탭 숨김 → `sendTabs`
-  - 탭 해제: `release`·`detach`, 종료 시 `releaseAll`
+  - 탭 활성화: `activate` → `fitTab`(칸은 `layout`, 막대 자리는 `bars`로 렌더러에 보냄) → 보여 주기 → 다른 탭 창 모두 숨김 → `sendTabs`
+  - 탭 해제: `release`·`detach`(창 하나)·`detachTab`(탭째), 종료 시 `releaseAll`
+  - 분할: 탭 오른쪽 클릭 메뉴(`tabMenu`, 메인이 그리는 네이티브 메뉴)에서 `join`·`popOut`·`unsplitAll`·`swap`. 창 사이 틈(`GAP`)에 렌더러가 막대(`.divider`)를 그림. 막대를 끄는 동안 렌더러는 막대를 다시 그리지 않음(포인터 캡처 유지)
 - **저장 파일**: `app.getPath('userData')` 아래 JSON 파일. 읽기는 `try/catch`로 실패하면 기본값을 씀
-  - `workspace.json`: 마지막 탭 그룹 `[{exe,title}]`
+  - `workspace.json`: 마지막 탭 그룹 `[{exe,title,split?}]`. `split`(`{x,y}` 비율, 옛 형식은 숫자)이 있으면 앞 항목들과 한 분할 탭으로 복원
   - `workspaces.json`: 이름 붙인 작업 공간 `[{id,name,items:[{exe,title,launch?}]}]`. `id`는 `Date.now().toString(36)`
   - `settings.json`: `{theme, autoRestore, autoUpdate}`. `settingChoices`에 있는 값만 받음
 

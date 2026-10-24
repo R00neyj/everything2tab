@@ -70,6 +70,13 @@
   .tab img { width: 16px; height: 16px; flex: none; opacity: .6; }
   .tab:hover img, .tab.active img { opacity: 1; }
   .tab .title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  /* 칸: 창 하나의 아이콘·제목. 분할 탭은 칸들을 세로선으로 나누고, 보이는 분할 탭에선 앞에 있지 않은 칸을 흐리게 */
+  .tab .pane { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; align-self: stretch; }
+  .tab.split { min-width: 96px; }
+  .tab .pane + .pane { position: relative; padding-left: 8px; }
+  .tab .pane + .pane::before { content: ""; position: absolute; left: 0; top: 7px; bottom: 7px; width: 1px; background: var(--line); }
+  .tab.split.active .pane:not(.focus) { color: var(--tab-idle); font-weight: 400; }
+  .tab.split.active .pane:not(.focus) img { opacity: .6; }
   .tab .x { flex: none; display: grid; place-items: center; width: 24px; height: 20px; border-radius: 4px; font: 9px var(--icon); visibility: hidden; }
   .tab:hover .x, .tab.active .x, .tab .x:focus-visible { visibility: visible; }
   .tab .x:hover { background: var(--hover); }
@@ -107,6 +114,15 @@
 
   /* ---- 탭 줄 아래 작업 영역 ---- */
   #stage { position: fixed; inset: var(--bar-h) 0 0 0; background: var(--surface); }
+  /* 분할 탭 창 사이 틈에 그리는 크기 조절 막대. 위치·크기는 renderer.js가 정함. x: 세로 막대(열 너비), y: 가로 막대(칸 높이) */
+  .divider { position: absolute; z-index: 1; }
+  .divider.x { cursor: col-resize; }
+  .divider.y { cursor: row-resize; }
+  .divider::after { content: ""; position: absolute; left: 50%; top: 50%; translate: -50% -50%; border-radius: 1px; background: var(--faint); }
+  .divider.x::after { width: 2px; height: 32px; }
+  .divider.y::after { width: 32px; height: 2px; }
+  .divider.x:hover::after, .divider.x.drag::after { height: 100%; border-radius: 0; background: var(--accent); }
+  .divider.y:hover::after, .divider.y.drag::after { width: 100%; border-radius: 0; background: var(--accent); }
 
   #empty { height: 100%; display: grid; place-items: center; padding: 32px; }
   #empty .inner { width: min(460px, 100%); }
@@ -230,11 +246,13 @@
       <dl class="help">
         <dt>다른 창을 이 화면으로 끌기</dt><dd>탭으로 추가</dd>
         <dt>탭을 탭 줄 밖으로 끌기, 가운데 클릭</dt><dd>원래 창으로 분리</dd>
+        <dt>탭을 오른쪽 클릭 → 이 탭에 나란히 놓기</dt><dd>다른 탭 창과 한 탭에 나란히 (최대 4개, 2×2)</dd>
         <dt><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>←</kbd> <kbd>→</kbd> 또는 <kbd>PgUp</kbd> <kbd>PgDn</kbd></dt><dd>이전 탭, 다음 탭</dd>
         <dt><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>1</kbd>–<kbd>9</kbd></dt><dd>n번째 탭 (9는 마지막 탭)</dd>
       </dl>
     </div>
   </section>
+  <div id="dividers"></div>
   <section id="picker" class="panel" hidden>
     <header><h2>탭으로 넣을 창</h2><span>다른 창을 여기로 끌어 놓아도 추가됩니다. Esc로 닫기</span></header>
     <div class="launch" id="picker-launch" hidden><h3>작업 공간 열기</h3><div class="launch-list"></div></div>
