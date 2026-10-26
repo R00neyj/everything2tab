@@ -464,7 +464,7 @@ function setShortcuts(on) {
 
 // ---- 다른 창을 끌어다 놓기: 평소엔 탭 줄, 창 선택 목록을 열었거나 탭이 없을 땐 창 전체가 놓을 자리 ----
 
-let drag = null; // { hwnd, start } 마우스를 누른 동안 앞에 있던 일반 창
+let drag = null; // { hwnd, start, last } 마우스를 누른 동안 앞에 있던 일반 창. start: 누른 시점 위치, last: 직전 틱 위치·크기
 let dropHint = false; // false | 'bar' | 'window'
 
 function setDropHint(zone) {
@@ -476,15 +476,18 @@ function setDropHint(zone) {
 function trackDrop(fg) {
   const down = w32.mouseDown();
   if (down && !drag && fg && fg !== host && !tabOf(fg) && w32.isAppWindow(fg)) {
-    drag = { hwnd: fg, start: w32.visibleRect(fg) };
+    drag = { hwnd: fg, start: w32.visibleRect(fg), last: null };
   }
   if (!drag) return;
   const r = w32.visibleRect(drag.hwnd);
   const moved = r.x !== drag.start.x || r.y !== drag.start.y;
+  // 끄는 초반의 복원(최대화 창)은 정상 드래그임. 떼는 틱에서 직전 틱과 크기가 다르거나 최대화 상태면(버튼·더블클릭·Aero Snap) 탭에 넣지 않음
+  const resized = drag.last && (r.w !== drag.last.w || r.h !== drag.last.h);
+  drag.last = r;
   const whole = overlay === 'picker' || !tabs.length;
   const zone = whole ? 'window' : 'bar';
   const area = whole ? w32.clientRectOnScreen(host) : barRect();
-  const over = moved && !win.isMinimized() && inside(w32.cursorPos(), area) ? zone : false;
+  const over = moved && !resized && !w32.api.IsZoomed(drag.hwnd) && !win.isMinimized() && inside(w32.cursorPos(), area) ? zone : false;
   if (down) return setDropHint(over);
   setDropHint(false);
   const hwnd = drag.hwnd;
