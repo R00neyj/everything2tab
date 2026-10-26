@@ -34,7 +34,8 @@ function render() {
   const { tabs, saved } = latest;
   for (const t of bar.querySelectorAll('.tab')) t.remove();
   tabs.forEach((t, i) => {
-    const tab = el('div', t.active ? 'tab active' : 'tab');
+    // 창 선택 목록·설정을 연 동안은 탭 창이 가려지므로 어느 탭도 활성으로 표시하지 않음
+    const tab = el('div', t.active && overlay === null ? 'tab active' : 'tab');
     if (t.panes.length > 1) { tab.classList.add('split'); tab.style.flexBasis = `${t.panes.length * 170}px`; }
     for (const p of t.panes) {
       const pane = el('div', p.active ? 'pane focus' : 'pane');
