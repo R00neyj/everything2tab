@@ -8,6 +8,7 @@ const dwmapi = koffi.load('dwmapi.dll');
 const RECT = koffi.struct('RECT', { left: 'long', top: 'long', right: 'long', bottom: 'long' });
 const POINT = koffi.struct('POINT', { x: 'long', y: 'long' });
 const EnumWindowsProc = koffi.proto('bool __stdcall EnumWindowsProc(intptr_t hwnd, intptr_t lParam)');
+const WINDOWPLACEMENT = koffi.struct('WINDOWPLACEMENT', { length: 'uint32_t', flags: 'uint32_t', showCmd: 'uint32_t', ptMinPosition: POINT, ptMaxPosition: POINT, rcNormalPosition: RECT });
 
 const api = {
   EnumWindows: user32.func('bool __stdcall EnumWindows(EnumWindowsProc *cb, intptr_t lParam)'),
@@ -19,6 +20,8 @@ const api = {
   ShowWindowAsync: user32.func('bool __stdcall ShowWindowAsync(intptr_t hwnd, int cmd)'),
   SetWindowPos: user32.func('bool __stdcall SetWindowPos(intptr_t hwnd, intptr_t after, int x, int y, int cx, int cy, uint32_t flags)'),
   GetWindowRect: user32.func('bool __stdcall GetWindowRect(intptr_t hwnd, _Out_ RECT *rect)'),
+  GetWindowPlacement: user32.func('bool __stdcall GetWindowPlacement(intptr_t hwnd, _Inout_ WINDOWPLACEMENT *wp)'),
+  SetWindowPlacement: user32.func('bool __stdcall SetWindowPlacement(intptr_t hwnd, WINDOWPLACEMENT *wp)'),
   GetClientRect: user32.func('bool __stdcall GetClientRect(intptr_t hwnd, _Out_ RECT *rect)'),
   ClientToScreen: user32.func('bool __stdcall ClientToScreen(intptr_t hwnd, _Inout_ POINT *pt)'),
   GetWindow: user32.func('intptr_t __stdcall GetWindow(intptr_t hwnd, uint32_t cmd)'),
@@ -38,6 +41,7 @@ const api = {
 };
 
 const SW_HIDE = 0, SW_SHOWNA = 8, SW_RESTORE = 9, SW_SHOW = 5;
+const SW_SHOWNORMAL = 1, SW_SHOWMAXIMIZED = 3;
 const GWL_EXSTYLE = -20, GWLP_HWNDPARENT = -8;
 const WS_EX_TOOLWINDOW = 0x80;
 const GW_OWNER = 4;
@@ -119,6 +123,23 @@ function visibleRect(hwnd) {
   return rectOf(r);
 }
 
+// 최대화 여부와 최대화 전 일반 위치(작업 영역 좌표, 작업 표시줄 제외). 최소화된 창도 일반 위치를 돌려줌
+function getPlacement(hwnd) {
+  const wp = { length: koffi.sizeof(WINDOWPLACEMENT) };
+  if (!api.GetWindowPlacement(hwnd, wp)) return null;
+  return { maximized: wp.showCmd === SW_SHOWMAXIMIZED, normal: rectOf(wp.rcNormalPosition) };
+}
+
+// getPlacement로 저장한 값을 그대로 되돌림
+function setPlacement(hwnd, pl) {
+  const n = pl.normal;
+  api.SetWindowPlacement(hwnd, {
+    length: koffi.sizeof(WINDOWPLACEMENT), flags: 0, showCmd: pl.maximized ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL,
+    ptMinPosition: { x: -1, y: -1 }, ptMaxPosition: { x: -1, y: -1 },
+    rcNormalPosition: { left: n.x, top: n.y, right: n.x + n.w, bottom: n.y + n.h },
+  });
+}
+
 // 작업 공간 창의 클라이언트 영역(화면 좌표, 물리 픽셀)
 function clientRectOnScreen(hwnd) {
   const r = {};
@@ -155,6 +176,7 @@ function setEmbedded(hwnd, embed) {
 
 module.exports = {
   api, isAppWindow, listAppWindows, cursorPos, getTitle, getExePath, visibleRect, clientRectOnScreen, fitVisible, setEmbedded,
+  getPlacement, setPlacement,
   setOwner: (hwnd, owner) => api.SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, owner),
   show: (hwnd) => api.ShowWindowAsync(hwnd, SW_SHOWNA),
   showActivate: (hwnd) => api.ShowWindowAsync(hwnd, SW_SHOW),
