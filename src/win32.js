@@ -5,6 +5,8 @@ const user32 = koffi.load('user32.dll');
 const kernel32 = koffi.load('kernel32.dll');
 const dwmapi = koffi.load('dwmapi.dll');
 const gdi32 = koffi.load('gdi32.dll');
+const shell32 = koffi.load('shell32.dll');
+const ole32 = koffi.load('ole32.dll');
 
 const ICONINFO = koffi.struct('ICONINFO', { fIcon: 'int', xHotspot: 'uint32_t', yHotspot: 'uint32_t', hbmMask: 'intptr_t', hbmColor: 'intptr_t' });
 const BITMAP = koffi.struct('BITMAP', { bmType: 'long', bmWidth: 'long', bmHeight: 'long', bmWidthBytes: 'long', bmPlanes: 'uint16_t', bmBitsPixel: 'uint16_t', bmBits: 'void *' });
@@ -12,6 +14,12 @@ const RECT = koffi.struct('RECT', { left: 'long', top: 'long', right: 'long', bo
 const POINT = koffi.struct('POINT', { x: 'long', y: 'long' });
 const EnumWindowsProc = koffi.proto('bool __stdcall EnumWindowsProc(intptr_t hwnd, intptr_t lParam)');
 const WINDOWPLACEMENT = koffi.struct('WINDOWPLACEMENT', { length: 'uint32_t', flags: 'uint32_t', showCmd: 'uint32_t', ptMinPosition: POINT, ptMaxPosition: POINT, rcNormalPosition: RECT });
+// 문자열(VT_LPWSTR) 또는 빈 값(VT_EMPTY)만 담는 PROPVARIANT (x64 기준 24바이트)
+const PROPVARIANT_STR = koffi.struct('PROPVARIANT_STR', { vt: 'uint16_t', r1: 'uint16_t', r2: 'uint16_t', r3: 'uint16_t', str: 'str16', pad: 'uint64_t' });
+// IPropertyStore 메서드 (vtable 순서: QueryInterface, AddRef, Release, GetCount, GetAt, GetValue, SetValue, Commit)
+const ComRelease = koffi.proto('uint32_t __stdcall ComRelease(void *self)');
+const PSGetValue = koffi.proto('long __stdcall PSGetValue(void *self, void *key, void *pv)');
+const PSSetValue = koffi.proto('long __stdcall PSSetValue(void *self, void *key, PROPVARIANT_STR *pv)');
 
 const api = {
   EnumWindows: user32.func('bool __stdcall EnumWindows(EnumWindowsProc *cb, intptr_t lParam)'),
@@ -49,6 +57,9 @@ const api = {
   GetObjectW: gdi32.func('int __stdcall GetObjectW(intptr_t h, int size, _Out_ BITMAP *out)'),
   GetDIBits: gdi32.func('int __stdcall GetDIBits(intptr_t hdc, intptr_t hbm, uint32_t start, uint32_t lines, _Out_ void *bits, void *bmi, uint32_t usage)'),
   DeleteObject: gdi32.func('bool __stdcall DeleteObject(intptr_t h)'),
+  SHGetPropertyStoreForWindow: shell32.func('long __stdcall SHGetPropertyStoreForWindow(intptr_t hwnd, void *riid, _Out_ void **ppv)'),
+  CoInitializeEx: ole32.func('long __stdcall CoInitializeEx(void *reserved, uint32_t flags)'),
+  PropVariantClear: ole32.func('long __stdcall PropVariantClear(void *pv)'),
 };
 
 const SW_HIDE = 0, SW_SHOWNA = 8, SW_RESTORE = 9, SW_SHOW = 5;
@@ -63,6 +74,21 @@ const SWP_NOSIZE = 0x1, SWP_NOZORDER = 0x4, SWP_NOACTIVATE = 0x10, SWP_ASYNCWIND
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 const VK_LBUTTON = 0x01;
 const WM_GETICON = 0x7F, ICON_BIG = 1, ICON_SMALL2 = 2, GCLP_HICON = -14, GCLP_HICONSM = -34, SMTO_ABORTIFHUNG = 0x2;
+const COINIT_APARTMENTTHREADED = 0x2, VT_EMPTY = 0, VT_LPWSTR = 31;
+
+// '{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}' → GUID 16바이트
+function guid(s) {
+  const h = s.replace(/[{}-]/g, '');
+  const b = Buffer.alloc(16);
+  b.writeUInt32LE(parseInt(h.slice(0, 8), 16), 0);
+  b.writeUInt16LE(parseInt(h.slice(8, 12), 16), 4);
+  b.writeUInt16LE(parseInt(h.slice(12, 16), 16), 6);
+  Buffer.from(h.slice(16), 'hex').copy(b, 8);
+  return b;
+}
+const IID_IPropertyStore = guid('886d8eeb-8cf2-4446-8d02-cdba1dbdcf99');
+// PKEY_AppUserModel_ID = { 9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3 }, 5
+const PKEY_AppUserModel_ID = Buffer.concat([guid('9f4c2855-9f79-4b39-a8d0-e1d42de1d5f3'), Buffer.from([5, 0, 0, 0])]);
 
 function u16(buf, len) {
   return Buffer.from(buf.buffer, buf.byteOffset, len * 2).toString('utf16le');
@@ -205,6 +231,53 @@ function refreshTaskbar(hwnd) {
   api.ShowWindowAsync(hwnd, SW_SHOWNA);
 }
 
+// 창의 속성 저장소(IPropertyStore)를 열어 fn(call)을 실행. call(메서드 번호, 원형, ...인수). 열지 못하면 undefined
+let comReady = false;
+function withPropStore(hwnd, fn) {
+  if (!comReady) { api.CoInitializeEx(null, COINIT_APARTMENTTHREADED); comReady = true; } // 이미 초기화돼 있으면 실패해도 그대로 씀
+  const out = [null];
+  if (api.SHGetPropertyStoreForWindow(hwnd, IID_IPropertyStore, out) < 0 || !out[0]) return undefined;
+  const store = out[0];
+  const vtbl = koffi.decode(koffi.decode(store, 'void *'), 'void *', 8);
+  try {
+    return fn((i, proto, ...args) => koffi.call(vtbl[i], proto, store, ...args));
+  } finally {
+    koffi.call(vtbl[2], ComRelease, store);
+  }
+}
+
+// 창에 지정된 AppUserModelID. 없으면 null
+function readAppId(call) {
+  const pv = Buffer.alloc(24);
+  if (call(5, PSGetValue, PKEY_AppUserModel_ID, pv) < 0) return null;
+  try {
+    return pv.readUInt16LE(0) === VT_LPWSTR ? koffi.decode(pv, 8, 'str16') : null;
+  } finally {
+    api.PropVariantClear(pv);
+  }
+}
+
+function getAppId(hwnd) {
+  try { return withPropStore(hwnd, readAppId) ?? null; } catch { return null; }
+}
+
+// 작업 표시줄은 AppUserModelID가 같은 창을 한 그룹으로 묶음. id를 주면 그 값으로 바꾸고, null이면 바꾸기 전 값으로 되돌림
+const origAppId = new Map(); // hwnd → 원래 값(없었으면 null)
+function setAppId(hwnd, id) {
+  try {
+    withPropStore(hwnd, (call) => {
+      if (id) {
+        if (!origAppId.has(hwnd)) origAppId.set(hwnd, readAppId(call));
+        call(6, PSSetValue, PKEY_AppUserModel_ID, { vt: VT_LPWSTR, str: id });
+      } else if (origAppId.has(hwnd)) {
+        const o = origAppId.get(hwnd);
+        origAppId.delete(hwnd);
+        call(6, PSSetValue, PKEY_AppUserModel_ID, o ? { vt: VT_LPWSTR, str: o } : { vt: VT_EMPTY, str: null });
+      }
+    });
+  } catch {}
+}
+
 // 비활성 탭 창을 화면 밖으로 옮김. 숨기지 않아야 작업 표시줄 버튼이 남음
 function park(hwnd) {
   return api.SetWindowPos(hwnd, 0, PARK, PARK, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
@@ -270,7 +343,7 @@ function windowIcon(hwnd) {
 }
 
 module.exports = {
-  forceTaskbar, refreshTaskbar, park, windowIcon,
+  forceTaskbar, refreshTaskbar, getAppId, setAppId, park, windowIcon,
   api, isAppWindow, listAppWindows, cursorPos, getTitle, getExePath, visibleRect, clientRectOnScreen, fitVisible, setEmbedded,
   getPlacement, setPlacement,
   setOwner: (hwnd, owner) => api.SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, owner),

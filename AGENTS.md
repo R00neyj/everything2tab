@@ -6,7 +6,7 @@ everything2tab: Windows 전용 Electron 앱. 열려 있는 외부 프로그램 �
 
 ## Architecture & Data Flow
 
-- **창 붙이는 방식**: 외부 창을 Electron 안에 넣지 않음. 탭 줄은 HTML(`src/index.html`)이 그림. 외부 창은 Win32로 소유자(owner)를 host로 바꾸고(`setOwner`, GWLP_HWNDPARENT), 탭 줄 아래 영역(`contentRect()`)에 위치·크기를 맞춰 겹쳐 놓음. 소유된 창은 작업 표시줄 버튼이 없으므로 `WS_EX_APPWINDOW`를 붙여(`forceTaskbar`) 버튼을 유지함. 비활성 탭 창은 숨기지 않고 화면 밖으로 옮김(`park`)
+- **창 붙이는 방식**: 외부 창을 Electron 안에 넣지 않음. 탭 줄은 HTML(`src/index.html`)이 그림. 외부 창은 Win32로 소유자(owner)를 host로 바꾸고(`setOwner`, GWLP_HWNDPARENT), 탭 줄 아래 영역(`contentRect()`)에 위치·크기를 맞춰 겹쳐 놓음. 소유된 창은 작업 표시줄 버튼이 없으므로 `WS_EX_APPWINDOW`를 붙여(`forceTaskbar`) 버튼을 유지함. 탭 창의 AppUserModelID를 앱 값(`build.appId`)으로 바꿔(`setAppId`) 작업 표시줄에서 host와 한 그룹으로 묶고, 뺄 때 원래 값으로 되돌림. 탭이 있으면 host 버튼은 그룹에서 뺌(`syncHostTaskbar`, 탭이 없거나 최소화된 동안은 다시 보임). 비활성 탭 창은 숨기지 않고 화면 밖으로 옮김(`park`)
 - **프로세스 구성**
   - `src/main.js`: 상태를 모두 가짐(`tabs[]`, `active`, `overlay`, `restoring`, `workspaces`, `settings`). IPC, 저장 파일, 단축키를 처리함
     - `tabs[]`는 `{panes:[{hwnd,title,exe,icon,minW?,minH?}], ratio:{x,y}, focus}`. 창이 2~4개면 분할 탭(2개 좌우, 3개 왼쪽 + 오른쪽 위아래, 4개 2×2, `COLS`). `active`는 앞에 있는 창 HWND이고, 그 창이 든 탭이 보이는 탭

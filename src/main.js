@@ -5,6 +5,9 @@ const { app, BrowserWindow, ipcMain, Menu, globalShortcut, nativeImage, nativeTh
 const w32 = require('./win32');
 const updater = require('./updater');
 
+// 작업 표시줄 그룹 기준. 작업 공간 창과 탭 안 창에 같은 값을 줘서 한 그룹으로 묶음. 설치형 바로 가기의 값(build.appId)과 같게 둠
+const APP_ID = require('../package.json').build.appId;
+
 let win;
 let host = 0; // 작업 공간 창 HWND
 let barHeight = 40; // 탭 바 높이 (물리 픽셀, 렌더러가 알려 줌)
@@ -102,6 +105,17 @@ function sendTabs() {
   });
   const title = cur?.panes.find((p) => p.hwnd === active)?.title;
   win.setTitle(title ? `${title} - everything2tab` : 'everything2tab');
+  syncHostTaskbar();
+}
+
+// 탭 창 버튼이 있으면 작업 공간 창 버튼은 작업 표시줄 그룹에서 뺌
+// 탭이 없을 때와 최소화된 동안(소유된 탭 창도 같이 숨겨져 버튼이 사라짐)에는 다시 보여 줌
+let hostSkipped = false;
+function syncHostTaskbar() {
+  const skip = tabs.length > 0 && !win.isMinimized();
+  if (skip === hostSkipped) return;
+  hostSkipped = skip;
+  win.setSkipTaskbar(skip);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -288,6 +302,7 @@ async function addTab(hwnd) {
   // 소유자를 작업 공간 창으로: 항상 그 위에 그려지고 최소화·복원을 같이 따라감
   w32.setOwner(hwnd, host);
   w32.forceTaskbar(hwnd, true); // 소유된 창도 작업 표시줄 버튼은 그대로
+  w32.setAppId(hwnd, APP_ID); // 작업 표시줄에서 작업 공간 창과 한 그룹으로
   w32.setEmbedded(hwnd, true);
   w32.refreshTaskbar(hwnd);
   activate(hwnd);
@@ -379,6 +394,7 @@ function tabMenu(hwnd) {
 function release(hwnd) {
   w32.setOwner(hwnd, 0);
   w32.forceTaskbar(hwnd, false);
+  w32.setAppId(hwnd, null);
   w32.setEmbedded(hwnd, false);
   // 보이는 채로 소유자만 바꾸면 셸이 작업 표시줄 버튼을 다시 만들지 않으므로 숨겼다 다시 보여 줌
   w32.refreshTaskbar(hwnd);
@@ -680,6 +696,8 @@ function setSetting(key, value) {
   fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
 }
 
+app.setAppUserModelId(APP_ID); // 창을 만들기 전에 정해야 작업 공간 창에 적용됨
+
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   saveFile = path.join(app.getPath('userData'), 'workspace.json');
@@ -715,6 +733,7 @@ app.whenReady().then(() => {
   systemPreferences.on('accent-color-changed', applyAccent);
 
   for (const ev of ['move', 'resize', 'maximize', 'unmaximize', 'restore']) win.on(ev, fitActive);
+  for (const ev of ['minimize', 'restore']) win.on(ev, syncHostTaskbar);
   win.on('close', releaseAll);
 
   ipcMain.on('bar-height', (_e, px) => { barHeight = Math.round(px); fitActive(); });
