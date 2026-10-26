@@ -57,6 +57,9 @@ npm run dist         # dist/에 NSIS 설치 파일과 portable exe 생성 (win x
 - 릴리스: `git tag v2026.10.24 && git push origin v2026.10.24`. 베타는 `v2026.10.24-beta.1`
 - CI가 앞자리 0을 뺀 semver(`2026.10.24`)로 `npm version`을 실행하고 GitHub Release를 만듦
 - `package.json`의 `version`은 CI가 덮어쓰므로 손으로 관리하지 않음
+- 로컬 빌드도 릴리스 날짜 버전으로 만듦. 그냥 `npm run dist`를 하면 `package.json`의 `0.1.0`이 파일 이름·앱 버전에 들어감. `package.json`은 고치지 않고 이번 빌드에만 버전을 넣음
+  - `npm run dist -- -c.extraMetadata.version=2026.10.27-beta.1`
+  - 버전은 태그에서 `v`와 앞자리 0을 뺀 값(CI와 같음)
 
 ## Code Conventions & Common Patterns
 
@@ -77,6 +80,7 @@ npm run dist         # dist/에 NSIS 설치 파일과 portable exe 생성 (win x
   - 새 오버레이를 추가하려면 렌더러의 `overlays` 맵과 메인의 `overlay` 처리를 같이 고침
 - **동시 실행 잠금**: 메인의 `restoring`이 켜져 있으면 `openItems`는 `null`을 반환하고 저장도 하지 않음. 렌더러는 `busy`와 `runBusy`로 한 번에 하나만 열게 함
 - **탭 드래그 중 다시 그리기**: 드래그 중 `render()`를 하면 포인터 캡처가 끊기므로 다시 그리지 않음. 탭 활성화는 `pointerup`에서 함
+- **패키징된 package.json**: electron-builder가 `build` 항목을 빼므로 설치형에서는 `require('../package.json').build`가 `undefined`임. 앱 ID는 `main.js`의 `APP_ID` 상수에 따로 적어 두었으니 `build.appId`를 바꾸면 함께 고침
 - **태그 규칙 위치**: `vYYYY.MM.DD[-beta.N]` 규칙이 세 곳에 있음. 바꿀 때 함께 고침
   - `.github/workflows/release.yml`의 정규식
   - `release.yml` 상단 주석

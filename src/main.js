@@ -5,8 +5,9 @@ const { app, BrowserWindow, ipcMain, Menu, globalShortcut, nativeImage, nativeTh
 const w32 = require('./win32');
 const updater = require('./updater');
 
-// 작업 표시줄 그룹 기준. 작업 공간 창과 탭 안 창에 같은 값을 줘서 한 그룹으로 묶음. 설치형 바로 가기의 값(build.appId)과 같게 둠
-const APP_ID = require('../package.json').build.appId;
+// 작업 표시줄 그룹 기준. 작업 공간 창과 탭 안 창에 같은 값을 줘서 한 그룹으로 묶음. 설치형 바로 가기의 값(package.json의 build.appId)과 같게 둠
+// package.json에서 읽지 않음: electron-builder가 패키징할 때 build 항목을 빼서 설치형에서는 없음
+const APP_ID = 'com.r00neyj.everything2tab';
 
 let win;
 let host = 0; // 작업 공간 창 HWND
