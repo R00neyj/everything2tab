@@ -54,7 +54,7 @@
   /* 탭 요소 자체는 탭 줄 꼭대기부터 닿게 해서 위쪽 빈 4px도 클릭되게 함(Chrome과 같음). 보이는 탭 모양은 ::before가 그림 */
   .tab {
     position: relative; isolation: isolate; display: flex; align-items: center; gap: 8px;
-    flex: 0 1 240px; min-width: 52px; height: var(--bar-h); padding: 4px 3px 0 10px;
+    flex: 0 1 240px; min-width: 52px; height: var(--bar-h); padding: 0 3px 0 0;
     color: var(--tab-idle);
     -webkit-app-region: no-drag;
   }
@@ -71,10 +71,11 @@
   .tab:hover img, .tab.active img { opacity: 1; }
   .tab .title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   /* 칸: 창 하나의 아이콘·제목. 분할 탭은 칸들을 세로선으로 나누고, 보이는 분할 탭에선 앞에 있지 않은 칸을 흐리게 */
-  .tab .pane { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; align-self: stretch; }
+  .tab .pane { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; align-self: stretch; padding-top: 4px; }
+  .tab .pane:first-child { padding-left: 10px; }
   .tab.split { min-width: 96px; }
   .tab .pane + .pane { position: relative; padding-left: 8px; }
-  .tab .pane + .pane::before { content: ""; position: absolute; left: 0; top: 7px; bottom: 7px; width: 1px; background: var(--line); }
+  .tab .pane + .pane::before { content: ""; position: absolute; left: 0; top: 11px; bottom: 7px; width: 1px; background: var(--line); }
   .tab.split.active .pane:not(.focus) { color: var(--tab-idle); font-weight: 400; }
   .tab.split.active .pane:not(.focus) img { opacity: .6; }
   .tab .x { flex: none; display: grid; place-items: center; width: 24px; height: 20px; border-radius: 4px; font: 9px var(--icon); visibility: hidden; }

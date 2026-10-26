@@ -16,6 +16,7 @@ let active = 0; // 앞에 있는(키 입력을 받는) 탭 창 HWND. 그 창이 
 const icons = new Map(); // exe 경로 → data URL
 let saveFile;
 let saved = []; // 마지막으로 저장한 그룹 [{ exe, title }]
+const origRect = new Map(); // hwnd -> 탭에 넣기 전 보이는 사각형 { x, y, w, h }
 
 function contentRect() {
   const c = w32.clientRectOnScreen(host);
@@ -275,6 +276,7 @@ function activateOffset(d) {
 
 async function addTab(hwnd) {
   if (tabOf(hwnd) || hwnd === host || !w32.api.IsWindow(hwnd)) return;
+  origRect.set(hwnd, w32.visibleRect(hwnd)); // 탭에 넣기 전 보이는 사각형. 뺄 때 이 크기로 되돌림
   const exe = w32.getExePath(hwnd);
   tabs.push({ panes: [{ hwnd, title: w32.getTitle(hwnd), exe, icon: await iconFor(exe) }], ratio: { x: 0.5, y: 0.5 }, focus: hwnd });
   // 소유자를 작업 공간 창으로: 항상 그 위에 그려지고 최소화·복원을 같이 따라감
@@ -392,8 +394,16 @@ function unlist(hwnd) {
 function setFree(hwnd, r, at) {
   if (!w32.api.IsWindow(hwnd)) return;
   release(hwnd);
-  const p = at || { x: r.x + 40, y: r.y + 40 };
-  w32.fitVisible(hwnd, { x: p.x, y: p.y, w: Math.round(r.w * 0.8), h: Math.round(r.h * 0.8) });
+  const o = origRect.get(hwnd);
+  origRect.delete(hwnd);
+  if (o) {
+    // 탭에 넣기 전 크기로 되돌림. 끌어서 놓은 자리(at)가 있으면 그 위치에
+    const p = at || o;
+    w32.fitVisible(hwnd, { x: p.x, y: p.y, w: o.w, h: o.h });
+  } else {
+    const p = at || { x: r.x + 40, y: r.y + 40 };
+    w32.fitVisible(hwnd, { x: p.x, y: p.y, w: Math.round(r.w * 0.8), h: Math.round(r.h * 0.8) });
+  }
   w32.api.SetForegroundWindow(hwnd);
 }
 
