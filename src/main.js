@@ -65,7 +65,8 @@ function layout(t) {
 // 보이는 탭을 맞춤. 막대 자리는 렌더러에 알림
 function fitTab(t) {
   const { rects, bars } = layout(t);
-  if (!overlay) rects.forEach((r, i) => w32.fitVisible(t.panes[i].hwnd, r)); // 오버레이가 열려 있으면 창은 화면 밖에 둔 채로
+  // 오버레이가 열려 있으면 창은 최소화해 둔 채로. 복원 중인(아직 최소화된) 창은 테두리 크기를 잴 수 없으므로 복원 뒤 poll이 맞춤
+  if (!overlay) rects.forEach((r, i) => { if (!w32.api.IsIconic(t.panes[i].hwnd)) w32.fitVisible(t.panes[i].hwnd, r); });
   win.webContents.send('bars', { gap: GAP, bars });
 }
 
@@ -272,18 +273,28 @@ async function iconFor(exe, hwnd) {
   return icons.get(exe);
 }
 
+// 우리가 최소화해 둔 탭 창. 복원이 끝나기 전의 최소화 상태를 프로그램의 최소화 버튼으로 오해하지 않으려고 기억함
+const parked = new Set();
+function park(hwnd) {
+  parked.add(hwnd);
+  w32.park(hwnd);
+}
+
 // hwnd가 든 탭을 보여 주고 hwnd를 앞에 둠. 분할 탭이면 두 창을 함께 보여 줌
 function activate(hwnd) {
   const t = tabOf(hwnd);
   if (!t) return;
   active = hwnd;
   t.focus = hwnd;
-  for (const p of t.panes) if (w32.api.IsZoomed(p.hwnd) || w32.api.IsIconic(p.hwnd)) w32.restore(p.hwnd);
+  // 최소화가 아직 반영되지 않은 창(parked)도 복원 요청: 비동기라 요청한 순서대로 처리됨. 오버레이가 열려 있으면 최소화해 둔 채로
+  for (const p of t.panes) {
+    if (w32.api.IsZoomed(p.hwnd) || (!overlay && (w32.api.IsIconic(p.hwnd) || parked.has(p.hwnd)))) w32.restore(p.hwnd);
+  }
   fitTab(t);
-  if (overlay) for (const p of t.panes) w32.park(p.hwnd);
+  if (overlay) for (const p of t.panes) park(p.hwnd);
   else for (const p of t.panes) (p.hwnd === hwnd ? w32.showActivate : w32.show)(p.hwnd);
-  // 다른 탭 창은 모두 화면 밖으로: 숨기면 작업 표시줄 버튼이 사라지므로 보이는 채로 옮김. 분할을 풀거나 합쳐서 창이 다른 탭으로 옮겨 간 경우도 함께 처리
-  for (const o of tabs) if (o !== t) for (const p of o.panes) w32.park(p.hwnd);
+  // 다른 탭 창은 모두 최소화: 숨기면 작업 표시줄 버튼이 사라짐. 분할을 풀거나 합쳐서 창이 다른 탭으로 옮겨 간 경우도 함께 처리
+  for (const o of tabs) if (o !== t) for (const p of o.panes) park(p.hwnd);
   w32.api.SetForegroundWindow(hwnd);
   sendTabs();
 }
@@ -392,6 +403,7 @@ function tabMenu(hwnd) {
 
 // 탭에서 빼서 원래 독립 창으로 되돌림
 function release(hwnd) {
+  if (parked.delete(hwnd) || w32.api.IsIconic(hwnd)) w32.restore(hwnd); // 최소화해 둔 뒤쪽 탭 창
   w32.setOwner(hwnd, 0);
   w32.forceTaskbar(hwnd, false);
   w32.setAppId(hwnd, null);
@@ -422,11 +434,16 @@ function setFree(hwnd, r, at) {
   release(hwnd);
   const o = origPlacement.get(hwnd);
   origPlacement.delete(hwnd);
+  const fit = (t) => {
+    // 최소화해 둔 뒤쪽 탭 창은 먼저 그 자리로 복원(동기)해야 테두리 크기를 잴 수 있음
+    if (w32.api.IsIconic(hwnd)) w32.setPlacement(hwnd, { maximized: false, normal: t });
+    w32.fitVisible(hwnd, t);
+  };
   if (o && !at) w32.setPlacement(hwnd, o); // 탭에 넣기 전 위치·크기·최대화 여부 그대로
-  else if (o) w32.fitVisible(hwnd, { x: at.x, y: at.y, w: o.normal.w, h: o.normal.h }); // 놓은 자리에 원래 크기
+  else if (o) fit({ x: at.x, y: at.y, w: o.normal.w, h: o.normal.h }); // 놓은 자리에 원래 크기
   else {
     const p = at || { x: r.x + 40, y: r.y + 40 };
-    w32.fitVisible(hwnd, { x: p.x, y: p.y, w: Math.round(r.w * 0.8), h: Math.round(r.h * 0.8) });
+    fit({ x: p.x, y: p.y, w: Math.round(r.w * 0.8), h: Math.round(r.h * 0.8) });
   }
   w32.api.SetForegroundWindow(hwnd);
 }
@@ -538,6 +555,7 @@ function poll() {
   let changed = false;
   for (const p of panes()) {
     if (!w32.api.IsWindow(p.hwnd)) {
+      parked.delete(p.hwnd);
       const next = unlist(p.hwnd);
       if (next) activate(next);
       changed = true;
@@ -562,7 +580,9 @@ function poll() {
   }
 
   const t = tabOf(active);
-  if (t && !overlay && !win.isMinimized()) {
+  // 우리가 최소화해 둔 창은 복원이 반영될 때까지 아래 검사(최소화 버튼, 위치 맞춤)를 미룸
+  if (t && !overlay) for (const p of t.panes) if (parked.has(p.hwnd) && !w32.api.IsIconic(p.hwnd)) parked.delete(p.hwnd);
+  if (t && !overlay && !win.isMinimized() && !t.panes.some((p) => parked.has(p.hwnd))) {
     const zoomed = t.panes.find((p) => w32.api.IsZoomed(p.hwnd));
     const iconic = t.panes.find((p) => w32.api.IsIconic(p.hwnd));
     if (zoomed) {
@@ -652,8 +672,7 @@ function releaseAll() {
     release(p.hwnd);
     const o = origPlacement.get(p.hwnd);
     origPlacement.delete(p.hwnd);
-    if (o) w32.setPlacement(p.hwnd, o);
-    else if (w32.api.IsWindow(host)) w32.fitVisible(p.hwnd, contentRect()); // 화면 밖에 둔 창이 그대로 남지 않게
+    if (o) w32.setPlacement(p.hwnd, o); // 없으면 release가 복원한 마지막 칸 자리에 둠
   }
   tabs.length = 0;
   active = 0;
@@ -746,7 +765,7 @@ app.whenReady().then(() => {
     overlay = name;
     const t = tabOf(active);
     if (!t) return;
-    if (name) for (const p of t.panes) w32.park(p.hwnd);
+    if (name) for (const p of t.panes) park(p.hwnd);
     else activate(active);
   });
   ipcMain.handle('get-settings', () => settings);

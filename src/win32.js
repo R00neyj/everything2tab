@@ -62,15 +62,14 @@ const api = {
   PropVariantClear: ole32.func('long __stdcall PropVariantClear(void *pv)'),
 };
 
-const SW_HIDE = 0, SW_SHOWNA = 8, SW_RESTORE = 9, SW_SHOW = 5;
+const SW_HIDE = 0, SW_SHOWNA = 8, SW_RESTORE = 9, SW_SHOW = 5, SW_SHOWMINNOACTIVE = 7;
 const SW_SHOWNORMAL = 1, SW_SHOWMAXIMIZED = 3;
 const GWL_EXSTYLE = -20, GWLP_HWNDPARENT = -8;
 const WS_EX_TOOLWINDOW = 0x80, WS_EX_APPWINDOW = 0x40000;
 const GW_OWNER = 4;
-const PARK = -20000; // 비활성 탭 창을 옮겨 둘 화면 밖 좌표. -32000은 최소화 창 좌표라 앱이 최소화로 오해할 수 있어 피함
-const DWMWA_EXTENDED_FRAME_BOUNDS = 9, DWMWA_CLOAKED = 14, DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWA_BORDER_COLOR = 34;
+const DWMWA_TRANSITIONS_FORCEDISABLED = 3, DWMWA_EXTENDED_FRAME_BOUNDS = 9, DWMWA_CLOAKED = 14, DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWA_BORDER_COLOR = 34;
 const DWMWCP_DEFAULT = 0, DWMWCP_DONOTROUND = 1, DWMWA_COLOR_NONE = 0xFFFFFFFE, DWMWA_COLOR_DEFAULT = 0xFFFFFFFF;
-const SWP_NOSIZE = 0x1, SWP_NOZORDER = 0x4, SWP_NOACTIVATE = 0x10, SWP_ASYNCWINDOWPOS = 0x4000;
+const SWP_NOZORDER = 0x4, SWP_NOACTIVATE = 0x10, SWP_ASYNCWINDOWPOS = 0x4000;
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 const VK_LBUTTON = 0x01;
 const WM_GETICON = 0x7F, ICON_BIG = 1, ICON_SMALL2 = 2, GCLP_HICON = -14, GCLP_HICONSM = -34, SMTO_ABORTIFHUNG = 0x2;
@@ -208,9 +207,11 @@ function dwmSetU32(hwnd, attr, value) {
 
 // Windows 11이 창마다 그리는 1px 테두리와 둥근 모서리를 끄거나(embed=true) 되돌림
 // 탭 안에 넣은 창이 활성 탭과 이음매 없이 붙어 보이게 하려는 것. Windows 10에서는 실패해도 무시
+// 탭을 바꿀 때마다 최소화·복원(park)하므로 그 애니메이션도 끔
 function setEmbedded(hwnd, embed) {
   dwmSetU32(hwnd, DWMWA_BORDER_COLOR, embed ? DWMWA_COLOR_NONE : DWMWA_COLOR_DEFAULT);
   dwmSetU32(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, embed ? DWMWCP_DONOTROUND : DWMWCP_DEFAULT);
+  dwmSetU32(hwnd, DWMWA_TRANSITIONS_FORCEDISABLED, embed ? 1 : 0);
 }
 
 // 소유된 창은 작업 표시줄에 버튼이 없으므로 WS_EX_APPWINDOW로 강제로 띄움(on=true). 우리가 붙인 경우에만 되돌림
@@ -278,9 +279,10 @@ function setAppId(hwnd, id) {
   } catch {}
 }
 
-// 비활성 탭 창을 화면 밖으로 옮김. 숨기지 않아야 작업 표시줄 버튼이 남음
+// 비활성 탭 창을 활성화하지 않고 최소화함. 숨기면 작업 표시줄 버튼이 사라지고,
+// 화면 밖으로 옮기면 어느 모니터에도 속하지 않아 작업 보기(Win+Tab)가 모든 모니터에 띄움
 function park(hwnd) {
-  return api.SetWindowPos(hwnd, 0, PARK, PARK, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
+  return api.ShowWindowAsync(hwnd, SW_SHOWMINNOACTIVE);
 }
 
 // 비트맵을 32비트 BGRA 픽셀(위→아래 순서)로 읽음
