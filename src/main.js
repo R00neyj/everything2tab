@@ -23,11 +23,6 @@ function contentRect() {
   return { x: c.x, y: c.y + barHeight, w: c.w, h: Math.max(0, c.h - barHeight) };
 }
 
-function barRect() {
-  const c = w32.clientRectOnScreen(host);
-  return { x: c.x, y: c.y, w: c.w, h: barHeight };
-}
-
 const inside = (p, r) => p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h;
 
 const panes = () => tabs.flatMap((t) => t.panes);
@@ -481,6 +476,13 @@ function setShortcuts(on) {
 
 let drag = null; // { hwnd, start, last } 마우스를 누른 동안 앞에 있던 일반 창. start: 누른 시점 위치, last: 직전 틱 위치·크기
 let dropHint = false; // false | 'bar' | 'window'
+const DROP_REACH = 2; // 탭 줄에 놓을 자리를 탭 줄 아래로 탭 줄 높이의 몇 배만큼 더 넓힐지. 보이는 탭 줄 크기는 그대로
+
+// 탭 줄 + 그 아래 DROP_REACH만큼. 탭 창 영역을 넘지 않음
+function barDropRect() {
+  const c = w32.clientRectOnScreen(host);
+  return { x: c.x, y: c.y, w: c.w, h: Math.min(c.h, barHeight * (1 + DROP_REACH)) };
+}
 
 function setDropHint(zone) {
   if (zone === dropHint) return;
@@ -501,7 +503,7 @@ function trackDrop(fg) {
   drag.last = r;
   const whole = overlay === 'picker' || !tabs.length;
   const zone = whole ? 'window' : 'bar';
-  const area = whole ? w32.clientRectOnScreen(host) : barRect();
+  const area = whole ? w32.clientRectOnScreen(host) : barDropRect();
   const over = moved && !resized && !w32.api.IsZoomed(drag.hwnd) && !win.isMinimized() && inside(w32.cursorPos(), area) ? zone : false;
   if (down) return setDropHint(over);
   setDropHint(false);
