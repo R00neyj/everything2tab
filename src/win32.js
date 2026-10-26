@@ -4,7 +4,10 @@ const koffi = require('koffi');
 const user32 = koffi.load('user32.dll');
 const kernel32 = koffi.load('kernel32.dll');
 const dwmapi = koffi.load('dwmapi.dll');
+const gdi32 = koffi.load('gdi32.dll');
 
+const ICONINFO = koffi.struct('ICONINFO', { fIcon: 'int', xHotspot: 'uint32_t', yHotspot: 'uint32_t', hbmMask: 'intptr_t', hbmColor: 'intptr_t' });
+const BITMAP = koffi.struct('BITMAP', { bmType: 'long', bmWidth: 'long', bmHeight: 'long', bmWidthBytes: 'long', bmPlanes: 'uint16_t', bmBitsPixel: 'uint16_t', bmBits: 'void *' });
 const RECT = koffi.struct('RECT', { left: 'long', top: 'long', right: 'long', bottom: 'long' });
 const POINT = koffi.struct('POINT', { x: 'long', y: 'long' });
 const EnumWindowsProc = koffi.proto('bool __stdcall EnumWindowsProc(intptr_t hwnd, intptr_t lParam)');
@@ -38,6 +41,14 @@ const api = {
   DwmSetWindowAttribute: dwmapi.func('long __stdcall DwmSetWindowAttribute(intptr_t hwnd, uint32_t attr, void *value, uint32_t size)'),
   DwmGetRect: dwmapi.func('DwmGetWindowAttribute', 'long', ['intptr_t', 'uint32_t', koffi.out(koffi.pointer(RECT)), 'uint32_t']),
   CloseHandle: kernel32.func('bool __stdcall CloseHandle(intptr_t h)'),
+  SendMessageTimeoutW: user32.func('intptr_t __stdcall SendMessageTimeoutW(intptr_t hwnd, uint32_t msg, uintptr_t wParam, intptr_t lParam, uint32_t flags, uint32_t timeout, _Out_ uintptr_t *result)'),
+  GetClassLongPtrW: user32.func('uintptr_t __stdcall GetClassLongPtrW(intptr_t hwnd, int index)'),
+  GetIconInfo: user32.func('bool __stdcall GetIconInfo(intptr_t hicon, _Out_ ICONINFO *info)'),
+  GetDC: user32.func('intptr_t __stdcall GetDC(intptr_t hwnd)'),
+  ReleaseDC: user32.func('int __stdcall ReleaseDC(intptr_t hwnd, intptr_t hdc)'),
+  GetObjectW: gdi32.func('int __stdcall GetObjectW(intptr_t h, int size, _Out_ BITMAP *out)'),
+  GetDIBits: gdi32.func('int __stdcall GetDIBits(intptr_t hdc, intptr_t hbm, uint32_t start, uint32_t lines, _Out_ void *bits, void *bmi, uint32_t usage)'),
+  DeleteObject: gdi32.func('bool __stdcall DeleteObject(intptr_t h)'),
 };
 
 const SW_HIDE = 0, SW_SHOWNA = 8, SW_RESTORE = 9, SW_SHOW = 5;
@@ -51,6 +62,7 @@ const DWMWCP_DEFAULT = 0, DWMWCP_DONOTROUND = 1, DWMWA_COLOR_NONE = 0xFFFFFFFE, 
 const SWP_NOSIZE = 0x1, SWP_NOZORDER = 0x4, SWP_NOACTIVATE = 0x10, SWP_ASYNCWINDOWPOS = 0x4000;
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 const VK_LBUTTON = 0x01;
+const WM_GETICON = 0x7F, ICON_BIG = 1, ICON_SMALL2 = 2, GCLP_HICON = -14, GCLP_HICONSM = -34, SMTO_ABORTIFHUNG = 0x2;
 
 function u16(buf, len) {
   return Buffer.from(buf.buffer, buf.byteOffset, len * 2).toString('utf16le');
@@ -198,8 +210,67 @@ function park(hwnd) {
   return api.SetWindowPos(hwnd, 0, PARK, PARK, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
 }
 
+// 비트맵을 32비트 BGRA 픽셀(위→아래 순서)로 읽음
+function bitmapPixels(hdc, hbm, w, h) {
+  const bmi = Buffer.alloc(44); // BITMAPINFOHEADER(40) + 색상표 1칸
+  bmi.writeUInt32LE(40, 0);
+  bmi.writeInt32LE(w, 4);
+  bmi.writeInt32LE(-h, 8); // 음수 높이 = 위에서 아래로
+  bmi.writeUInt16LE(1, 12);
+  bmi.writeUInt16LE(32, 14);
+  const px = Buffer.alloc(w * h * 4);
+  return api.GetDIBits(hdc, hbm, 0, h, px, bmi, 0) ? px : null;
+}
+
+// HICON → { width, height, bgra }. bgra는 알파를 미리 곱한 값(nativeImage.createFromBitmap 형식). 실패하면 null
+function iconPixels(hicon) {
+  const ii = {};
+  if (!api.GetIconInfo(hicon, ii)) return null;
+  const hdc = api.GetDC(0);
+  try {
+    if (!ii.hbmColor) return null; // 흑백 아이콘은 건너뜀
+    const bm = {};
+    if (!api.GetObjectW(ii.hbmColor, koffi.sizeof(BITMAP), bm)) return null;
+    const w = bm.bmWidth, h = bm.bmHeight;
+    const px = bitmapPixels(hdc, ii.hbmColor, w, h);
+    if (!px) return null;
+    let hasAlpha = false;
+    for (let i = 3; i < px.length; i += 4) if (px[i]) { hasAlpha = true; break; }
+    if (hasAlpha) {
+      for (let i = 0; i < px.length; i += 4) {
+        const a = px[i + 3];
+        px[i] = px[i] * a / 255; px[i + 1] = px[i + 1] * a / 255; px[i + 2] = px[i + 2] * a / 255;
+      }
+    } else {
+      // 알파 없는 옛 아이콘: 마스크가 흰색(1)인 곳이 투명
+      const mask = ii.hbmMask && bitmapPixels(hdc, ii.hbmMask, w, h);
+      for (let i = 0; i < px.length; i += 4) {
+        if (mask && mask[i]) px[i] = px[i + 1] = px[i + 2] = px[i + 3] = 0;
+        else px[i + 3] = 255;
+      }
+    }
+    return { width: w, height: h, bgra: px };
+  } finally {
+    api.ReleaseDC(0, hdc);
+    if (ii.hbmColor) api.DeleteObject(ii.hbmColor);
+    if (ii.hbmMask) api.DeleteObject(ii.hbmMask);
+  }
+}
+
+// 창에 지정된 아이콘. 같은 exe로 도는 PWA처럼 창마다 아이콘이 다른 경우를 위함. 없으면 null
+function windowIcon(hwnd) {
+  const r = [0];
+  let hicon = 0;
+  for (const type of [ICON_BIG, ICON_SMALL2]) {
+    if (api.SendMessageTimeoutW(hwnd, WM_GETICON, type, 0, SMTO_ABORTIFHUNG, 200, r) && r[0]) { hicon = r[0]; break; }
+  }
+  if (!hicon) hicon = Number(api.GetClassLongPtrW(hwnd, GCLP_HICON)) || Number(api.GetClassLongPtrW(hwnd, GCLP_HICONSM));
+  if (!hicon) return null;
+  try { return iconPixels(Number(hicon)); } catch { return null; }
+}
+
 module.exports = {
-  forceTaskbar, refreshTaskbar, park,
+  forceTaskbar, refreshTaskbar, park, windowIcon,
   api, isAppWindow, listAppWindows, cursorPos, getTitle, getExePath, visibleRect, clientRectOnScreen, fitVisible, setEmbedded,
   getPlacement, setPlacement,
   setOwner: (hwnd, owner) => api.SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, owner),

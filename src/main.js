@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { app, BrowserWindow, ipcMain, Menu, globalShortcut, nativeTheme, systemPreferences, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, globalShortcut, nativeImage, nativeTheme, systemPreferences, dialog, shell } = require('electron');
 const w32 = require('./win32');
 const updater = require('./updater');
 
@@ -241,7 +241,17 @@ async function pickPrograms() {
 
 // ---- 탭 조작 ----
 
-async function iconFor(exe) {
+// 창에 지정된 아이콘의 data URL. 없으면 ''
+function windowIconUrl(hwnd) {
+  const ic = w32.windowIcon(hwnd);
+  if (!ic) return '';
+  try { return nativeImage.createFromBitmap(ic.bgra, { width: ic.width, height: ic.height }).toDataURL(); } catch { return ''; }
+}
+
+// hwnd가 있으면 창 아이콘을 먼저 씀(같은 chrome.exe로 도는 PWA마다 아이콘이 다름). 없으면 exe 아이콘
+async function iconFor(exe, hwnd) {
+  const own = hwnd ? windowIconUrl(hwnd) : '';
+  if (own) return own;
   if (!exe) return '';
   if (!icons.has(exe)) {
     try {
@@ -279,7 +289,7 @@ async function addTab(hwnd) {
   if (tabOf(hwnd) || hwnd === host || !w32.api.IsWindow(hwnd)) return;
   origPlacement.set(hwnd, w32.getPlacement(hwnd)); // activate가 최소화·최대화를 풀기 전에 저장해야 함
   const exe = w32.getExePath(hwnd);
-  tabs.push({ panes: [{ hwnd, title: w32.getTitle(hwnd), exe, icon: await iconFor(exe) }], ratio: { x: 0.5, y: 0.5 }, focus: hwnd });
+  tabs.push({ panes: [{ hwnd, title: w32.getTitle(hwnd), exe, icon: await iconFor(exe, hwnd) }], ratio: { x: 0.5, y: 0.5 }, focus: hwnd });
   // 소유자를 작업 공간 창으로: 항상 그 위에 그려지고 최소화·복원을 같이 따라감
   w32.setOwner(hwnd, host);
   w32.forceTaskbar(hwnd, true); // 소유된 창도 작업 표시줄 버튼은 그대로
@@ -516,7 +526,13 @@ function poll() {
       continue;
     }
     const title = w32.getTitle(p.hwnd);
-    if (title !== p.title) { p.title = title; changed = true; }
+    if (title !== p.title) {
+      p.title = title;
+      // 막 뜬 PWA는 창 아이콘을 늦게 지정하므로 제목이 바뀔 때 다시 읽음
+      const own = windowIconUrl(p.hwnd);
+      if (own) p.icon = own;
+      changed = true;
+    }
   }
   const fg = w32.api.GetForegroundWindow();
   setShortcuts(fg === host || !!tabOf(fg));
@@ -703,7 +719,7 @@ app.whenReady().then(() => {
   ipcMain.handle('list-windows', async () => {
     const exclude = new Set([host, ...panes().map((p) => p.hwnd)]);
     const list = w32.listAppWindows(exclude);
-    return Promise.all(list.map(async (x) => ({ ...x, icon: await iconFor(x.exe) })));
+    return Promise.all(list.map(async (x) => ({ ...x, icon: await iconFor(x.exe, x.hwnd) })));
   });
   ipcMain.on('overlay', (_e, name) => {
     overlay = name;
