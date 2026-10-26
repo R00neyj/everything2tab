@@ -207,11 +207,11 @@ function dwmSetU32(hwnd, attr, value) {
 
 // Windows 11이 창마다 그리는 1px 테두리와 둥근 모서리를 끄거나(embed=true) 되돌림
 // 탭 안에 넣은 창이 활성 탭과 이음매 없이 붙어 보이게 하려는 것. Windows 10에서는 실패해도 무시
-// 탭을 바꿀 때마다 최소화·복원(park)하므로 그 애니메이션도 끔
+// 최소화·복원 애니메이션 끄기는 park가 처음 최소화할 때 켜고 여기서(embed=false) 되돌림
 function setEmbedded(hwnd, embed) {
   dwmSetU32(hwnd, DWMWA_BORDER_COLOR, embed ? DWMWA_COLOR_NONE : DWMWA_COLOR_DEFAULT);
   dwmSetU32(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, embed ? DWMWCP_DONOTROUND : DWMWCP_DEFAULT);
-  dwmSetU32(hwnd, DWMWA_TRANSITIONS_FORCEDISABLED, embed ? 1 : 0);
+  if (!embed && noTransition.delete(hwnd)) dwmSetU32(hwnd, DWMWA_TRANSITIONS_FORCEDISABLED, 0);
 }
 
 // 소유된 창은 작업 표시줄에 버튼이 없으므로 WS_EX_APPWINDOW로 강제로 띄움(on=true). 우리가 붙인 경우에만 되돌림
@@ -281,7 +281,14 @@ function setAppId(hwnd, id) {
 
 // 비활성 탭 창을 활성화하지 않고 최소화함. 숨기면 작업 표시줄 버튼이 사라지고,
 // 화면 밖으로 옮기면 어느 모니터에도 속하지 않아 작업 보기(Win+Tab)가 모든 모니터에 띄움
+// 탭을 바꿀 때마다 최소화·복원하므로 그 애니메이션을 끔. 탭에 넣을 때 켜면 숨겼다 보이기(refreshTaskbar)와 겹쳐
+// Chrome 창이 그려지지 않고 남는 일이 있어서 처음 최소화할 때 켬
+const noTransition = new Set();
 function park(hwnd) {
+  if (!noTransition.has(hwnd)) {
+    noTransition.add(hwnd);
+    dwmSetU32(hwnd, DWMWA_TRANSITIONS_FORCEDISABLED, 1);
+  }
   return api.ShowWindowAsync(hwnd, SW_SHOWMINNOACTIVE);
 }
 
