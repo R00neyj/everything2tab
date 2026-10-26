@@ -6,7 +6,7 @@ everything2tab: Windows 전용 Electron 앱. 열려 있는 외부 프로그램 �
 
 ## Architecture & Data Flow
 
-- **창 붙이는 방식**: 외부 창을 Electron 안에 넣지 않음. 탭 줄은 HTML(`src/index.html`)이 그림. 외부 창은 Win32로 소유자(owner)를 host로 바꾸고(`setOwner`, GWLP_HWNDPARENT), 탭 줄 아래 영역(`contentRect()`)에 위치·크기를 맞춰 겹쳐 놓음. 비활성 탭 창은 숨김
+- **창 붙이는 방식**: 외부 창을 Electron 안에 넣지 않음. 탭 줄은 HTML(`src/index.html`)이 그림. 외부 창은 Win32로 소유자(owner)를 host로 바꾸고(`setOwner`, GWLP_HWNDPARENT), 탭 줄 아래 영역(`contentRect()`)에 위치·크기를 맞춰 겹쳐 놓음. 소유된 창은 작업 표시줄 버튼이 없으므로 `WS_EX_APPWINDOW`를 붙여(`forceTaskbar`) 버튼을 유지함. 비활성 탭 창은 숨기지 않고 화면 밖으로 옮김(`park`)
 - **프로세스 구성**
   - `src/main.js`: 상태를 모두 가짐(`tabs[]`, `active`, `overlay`, `restoring`, `workspaces`, `settings`). IPC, 저장 파일, 단축키를 처리함
     - `tabs[]`는 `{panes:[{hwnd,title,exe,icon,minW?,minH?}], ratio:{x,y}, focus}`. 창이 2~4개면 분할 탭(2개 좌우, 3개 왼쪽 + 오른쪽 위아래, 4개 2×2, `COLS`). `active`는 앞에 있는 창 HWND이고, 그 창이 든 탭이 보이는 탭
@@ -30,7 +30,7 @@ everything2tab: Windows 전용 Electron 앱. 열려 있는 외부 프로그램 �
   - 바뀐 게 있으면 `sendTabs()`를 호출함
 - **탭 흐름**
   - 탭 추가: `addTab` → `setOwner` + `setEmbedded(true)` → `activate`
-  - 탭 활성화: `activate` → `fitTab`(칸은 `layout`, 막대 자리는 `bars`로 렌더러에 보냄) → 보여 주기 → 다른 탭 창 모두 숨김 → `sendTabs`
+  - 탭 활성화: `activate` → `fitTab`(칸은 `layout`, 막대 자리는 `bars`로 렌더러에 보냄) → 보여 주기 → 다른 탭 창 모두 화면 밖으로(`park`) → `sendTabs`
   - 탭 해제: `release`·`detach`(창 하나)·`detachTab`(탭째), 종료 시 `releaseAll`
   - 분할: 탭 오른쪽 클릭 메뉴(`tabMenu`, 메인이 그리는 네이티브 메뉴)에서 `join`·`popOut`·`unsplitAll`·`swap`. 창 사이 틈(`GAP`)에 렌더러가 막대(`.divider`)를 그림. 막대를 끄는 동안 렌더러는 막대를 다시 그리지 않음(포인터 캡처 유지)
 - **저장 파일**: `app.getPath('userData')` 아래 JSON 파일. 읽기는 `try/catch`로 실패하면 기본값을 씀
@@ -73,7 +73,7 @@ npm run dist         # dist/에 NSIS 설치 파일과 portable exe 생성 (win x
 - **좌표**: 모두 물리 픽셀. 렌더러는 탭 바 높이에 `devicePixelRatio`를 곱해서 `ws.barHeight`로 보냄
 - **HWND**: JS number로 다룸. 64비트 값은 `Number()`로 감쌈
 - **show/hide 반영 시점**: `ShowWindowAsync`, `SWP_ASYNCWINDOWPOS`를 쓰므로 호출 직후에는 상태가 반영되지 않았을 수 있음
-- **오버레이**: HWND는 HTML 위에 그려지지 않음. 그래서 picker·settings를 열면 메인이 활성 창을 숨기고, 열려 있는 동안 위치 맞춤을 건너뜀
+- **오버레이**: HWND는 HTML 위에 그려지지 않음. 그래서 picker·settings를 열면 메인이 활성 창을 화면 밖으로 옮기고, 열려 있는 동안 위치 맞춤을 건너뜀
   - 새 오버레이를 추가하려면 렌더러의 `overlays` 맵과 메인의 `overlay` 처리를 같이 고침
 - **동시 실행 잠금**: 메인의 `restoring`이 켜져 있으면 `openItems`는 `null`을 반환하고 저장도 하지 않음. 렌더러는 `busy`와 `runBusy`로 한 번에 하나만 열게 함
 - **탭 드래그 중 다시 그리기**: 드래그 중 `render()`를 하면 포인터 캡처가 끊기므로 다시 그리지 않음. 탭 활성화는 `pointerup`에서 함

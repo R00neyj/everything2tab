@@ -43,11 +43,12 @@ const api = {
 const SW_HIDE = 0, SW_SHOWNA = 8, SW_RESTORE = 9, SW_SHOW = 5;
 const SW_SHOWNORMAL = 1, SW_SHOWMAXIMIZED = 3;
 const GWL_EXSTYLE = -20, GWLP_HWNDPARENT = -8;
-const WS_EX_TOOLWINDOW = 0x80;
+const WS_EX_TOOLWINDOW = 0x80, WS_EX_APPWINDOW = 0x40000;
 const GW_OWNER = 4;
+const PARK = -20000; // 비활성 탭 창을 옮겨 둘 화면 밖 좌표. -32000은 최소화 창 좌표라 앱이 최소화로 오해할 수 있어 피함
 const DWMWA_EXTENDED_FRAME_BOUNDS = 9, DWMWA_CLOAKED = 14, DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWA_BORDER_COLOR = 34;
 const DWMWCP_DEFAULT = 0, DWMWCP_DONOTROUND = 1, DWMWA_COLOR_NONE = 0xFFFFFFFE, DWMWA_COLOR_DEFAULT = 0xFFFFFFFF;
-const SWP_NOZORDER = 0x4, SWP_NOACTIVATE = 0x10, SWP_ASYNCWINDOWPOS = 0x4000;
+const SWP_NOSIZE = 0x1, SWP_NOZORDER = 0x4, SWP_NOACTIVATE = 0x10, SWP_ASYNCWINDOWPOS = 0x4000;
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 const VK_LBUTTON = 0x01;
 
@@ -174,7 +175,31 @@ function setEmbedded(hwnd, embed) {
   dwmSetU32(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, embed ? DWMWCP_DONOTROUND : DWMWCP_DEFAULT);
 }
 
+// 소유된 창은 작업 표시줄에 버튼이 없으므로 WS_EX_APPWINDOW로 강제로 띄움(on=true). 우리가 붙인 경우에만 되돌림
+const forcedTaskbar = new Set();
+function forceTaskbar(hwnd, on) {
+  const ex = Number(api.GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
+  if (on && !(ex & WS_EX_APPWINDOW)) {
+    forcedTaskbar.add(hwnd);
+    api.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (ex | WS_EX_APPWINDOW) >>> 0);
+  } else if (!on && forcedTaskbar.delete(hwnd)) {
+    api.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (ex & ~WS_EX_APPWINDOW) >>> 0);
+  }
+}
+
+// 소유자·확장 스타일을 바꾼 창을 숨겼다 다시 보여 줌: 셸은 창이 보이게 될 때 작업 표시줄 버튼 여부를 정함
+function refreshTaskbar(hwnd) {
+  if (api.IsWindowVisible(hwnd)) api.ShowWindowAsync(hwnd, SW_HIDE);
+  api.ShowWindowAsync(hwnd, SW_SHOWNA);
+}
+
+// 비활성 탭 창을 화면 밖으로 옮김. 숨기지 않아야 작업 표시줄 버튼이 남음
+function park(hwnd) {
+  return api.SetWindowPos(hwnd, 0, PARK, PARK, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
+}
+
 module.exports = {
+  forceTaskbar, refreshTaskbar, park,
   api, isAppWindow, listAppWindows, cursorPos, getTitle, getExePath, visibleRect, clientRectOnScreen, fitVisible, setEmbedded,
   getPlacement, setPlacement,
   setOwner: (hwnd, owner) => api.SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, owner),

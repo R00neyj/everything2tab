@@ -67,7 +67,7 @@ function layout(t) {
 // 보이는 탭을 맞춤. 막대 자리는 렌더러에 알림
 function fitTab(t) {
   const { rects, bars } = layout(t);
-  rects.forEach((r, i) => w32.fitVisible(t.panes[i].hwnd, r));
+  if (!overlay) rects.forEach((r, i) => w32.fitVisible(t.panes[i].hwnd, r)); // 오버레이가 열려 있으면 창은 화면 밖에 둔 채로
   win.webContents.send('bars', { gap: GAP, bars });
 }
 
@@ -261,9 +261,10 @@ function activate(hwnd) {
   t.focus = hwnd;
   for (const p of t.panes) if (w32.api.IsZoomed(p.hwnd) || w32.api.IsIconic(p.hwnd)) w32.restore(p.hwnd);
   fitTab(t);
-  if (!overlay) for (const p of t.panes) (p.hwnd === hwnd ? w32.showActivate : w32.show)(p.hwnd);
-  // 다른 탭 창은 모두 숨김: 분할을 풀거나 합쳐서 창이 다른 탭으로 옮겨 간 경우도 함께 처리
-  for (const o of tabs) if (o !== t) for (const p of o.panes) w32.hide(p.hwnd);
+  if (overlay) for (const p of t.panes) w32.park(p.hwnd);
+  else for (const p of t.panes) (p.hwnd === hwnd ? w32.showActivate : w32.show)(p.hwnd);
+  // 다른 탭 창은 모두 화면 밖으로: 숨기면 작업 표시줄 버튼이 사라지므로 보이는 채로 옮김. 분할을 풀거나 합쳐서 창이 다른 탭으로 옮겨 간 경우도 함께 처리
+  for (const o of tabs) if (o !== t) for (const p of o.panes) w32.park(p.hwnd);
   w32.api.SetForegroundWindow(hwnd);
   sendTabs();
 }
@@ -281,7 +282,9 @@ async function addTab(hwnd) {
   tabs.push({ panes: [{ hwnd, title: w32.getTitle(hwnd), exe, icon: await iconFor(exe) }], ratio: { x: 0.5, y: 0.5 }, focus: hwnd });
   // 소유자를 작업 공간 창으로: 항상 그 위에 그려지고 최소화·복원을 같이 따라감
   w32.setOwner(hwnd, host);
+  w32.forceTaskbar(hwnd, true); // 소유된 창도 작업 표시줄 버튼은 그대로
   w32.setEmbedded(hwnd, true);
+  w32.refreshTaskbar(hwnd);
   activate(hwnd);
 }
 
@@ -370,8 +373,10 @@ function tabMenu(hwnd) {
 // 탭에서 빼서 원래 독립 창으로 되돌림
 function release(hwnd) {
   w32.setOwner(hwnd, 0);
+  w32.forceTaskbar(hwnd, false);
   w32.setEmbedded(hwnd, false);
-  w32.show(hwnd);
+  // 보이는 채로 소유자만 바꾸면 셸이 작업 표시줄 버튼을 다시 만들지 않으므로 숨겼다 다시 보여 줌
+  w32.refreshTaskbar(hwnd);
 }
 
 // 창을 탭 목록에서만 뺌. 분할 탭이면 남은 창이 그 탭을 혼자 차지함
@@ -517,7 +522,10 @@ function poll() {
   setShortcuts(fg === host || !!tabOf(fg));
   trackDrop(fg);
   // 숨겨 둔 탭이 다른 경로(작업 표시줄 등)로 앞에 나오면 그 탭으로 전환. 분할 탭에서 다른 쪽 창을 누른 경우도 여기서 앞 창을 바꿈
-  if (fg && fg !== active && tabOf(fg)) activate(fg);
+  if (fg && fg !== active && tabOf(fg)) {
+    if (overlay) win.webContents.send('close-overlay'); // 열린 목록·설정은 닫고 그 탭을 보여 줌
+    activate(fg);
+  }
 
   const t = tabOf(active);
   if (t && !overlay && !win.isMinimized()) {
@@ -611,6 +619,7 @@ function releaseAll() {
     const o = origPlacement.get(p.hwnd);
     origPlacement.delete(p.hwnd);
     if (o) w32.setPlacement(p.hwnd, o);
+    else if (w32.api.IsWindow(host)) w32.fitVisible(p.hwnd, contentRect()); // 화면 밖에 둔 창이 그대로 남지 않게
   }
   tabs.length = 0;
   active = 0;
@@ -700,7 +709,7 @@ app.whenReady().then(() => {
     overlay = name;
     const t = tabOf(active);
     if (!t) return;
-    if (name) for (const p of t.panes) w32.hide(p.hwnd);
+    if (name) for (const p of t.panes) w32.park(p.hwnd);
     else activate(active);
   });
   ipcMain.handle('get-settings', () => settings);
